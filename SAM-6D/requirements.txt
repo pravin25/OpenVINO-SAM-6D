@@ -1,0 +1,30 @@
+--find-links https://download.pytorch.org/whl/torch_stable.html
+# Using CUDA 12.1 and PyTorch 2.4.0 requirements
+torch==2.4.0
+torchvision==0.19.0
+torchaudio==2.4.0
+fvcore
+xformers
+torchmetrics==0.10.3
+blenderproc==2.6.1
+opencv-python
+omegaconf
+ruamel.yaml
+hydra-colorlog
+hydra-core
+gdown
+pandas
+imageio
+pyrender
+pytorch-lightning
+pycocotools
+distinctipy
+git+https://github.com/facebookresearch/segment-anything.git
+ultralytics==8.0.135
+timm
+gorilla-core==0.2.7.8
+trimesh==4.0.8
+gpustat==1.0.0
+imgaug
+einops
+openvino

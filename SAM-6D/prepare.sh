@@ -1,6 +1,8 @@
 ### Create conda environment
-conda env create -f environment.yaml
-conda activate sam6d
+conda env create -f ov_environment.yaml
+conda activate ov_sam6d
+### IF conda env create failed, can use requirements.txt to setup the venv
+# pip install -r requirements.txt
 
 ### Install pointnet2
 cd Pose_Estimation_Model/model/pointnet2
