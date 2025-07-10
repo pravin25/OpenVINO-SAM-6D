@@ -55,7 +55,8 @@ def sample_pts_feats(pts, feats, npoint=2048, return_index=False):
         pts: B*N*3
         feats: B*N*C
     '''
-    sample_idx = furthest_point_sample(pts, npoint)
+    # sample_idx = furthest_point_sample(pts, npoint)
+    sample_idx = furthest_point_sample(pts, torch.tensor(npoint))
     pts = gather_operation(pts.transpose(1,2).contiguous(), sample_idx)
     pts = pts.transpose(1,2).contiguous()
     feats = gather_operation(feats.transpose(1,2).contiguous(), sample_idx)
