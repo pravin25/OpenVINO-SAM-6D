@@ -107,18 +107,16 @@ class PositionalEncoding(nn.Module):
                 pts1.contiguous(), pts2.contiguous(), pts1.transpose(1,2).contiguous()
             )
         feat1 = self.mlp1(feat1)
-        feat1 = F.max_pool2d(
-            feat1, kernel_size=[1, feat1.size(3)]
-        )
+        # feat1 = F.max_pool2d(feat1, kernel_size=[1, feat1.size(3)])
+        feat1 = torch.amax(feat1, dim=3, keepdim=True)
 
         # scale2
         feat2 = self.group2(
                 pts1.contiguous(), pts2.contiguous(), pts1.transpose(1,2).contiguous()
             )
         feat2 = self.mlp2(feat2)
-        feat2 = F.max_pool2d(
-            feat2, kernel_size=[1, feat2.size(3)]
-        )
+        # feat2 = F.max_pool2d(feat2, kernel_size=[1, feat2.size(3)])
+        feat2 = torch.amax(feat2, dim=3, keepdim=True)
 
         feat = torch.cat([feat1, feat2], dim=1).squeeze(-1)
         feat = self.mlp3(feat).transpose(1,2)
