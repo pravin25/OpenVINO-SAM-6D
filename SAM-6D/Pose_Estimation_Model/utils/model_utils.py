@@ -217,7 +217,11 @@ def compute_coarse_Rt(
     # sample pose hypothese
     cumsum_weights = torch.cumsum(pred_score, dim=1)
     cumsum_weights /= (cumsum_weights[:, -1].unsqueeze(1).contiguous()+1e-8)
-    idx = torch.searchsorted(cumsum_weights, torch.rand(B, n_proposal1*3, device=device))
+    
+    # idx = torch.searchsorted(cumsum_weights, torch.rand(B, n_proposal1*3, device=device))  #Exporting the operator 'aten::searchsorted' to ONNX opset version 20 is not supported
+    # 替换 torch.searchsorted 为 ONNX 兼容的实现
+    idx = weighted_sampling_onnx_compatible(cumsum_weights, B, n_proposal1*3, device)
+    
     idx1, idx2 = idx.div(N2, rounding_mode='floor'), idx % N2
     idx1 = torch.clamp(idx1, max=N1-1).unsqueeze(2).repeat(1,1,3)
     idx2 = torch.clamp(idx2, max=N2-1).unsqueeze(2).repeat(1,1,3)
@@ -246,6 +250,108 @@ def compute_coarse_Rt(
     pred_t = torch.gather(pred_ts, 1, idx.reshape(B,1,1,1).repeat(1,1,1,3)).squeeze(2).squeeze(1)
     return pred_R, pred_t
 
+
+def weighted_sampling_onnx_compatible(cumsum_weights, batch_size, num_samples, device):
+    """
+    ONNX兼容的加权采样实现，替代torch.searchsorted
+    
+    Args:
+        cumsum_weights: (B, N) 累积权重
+        batch_size: 批次大小
+        num_samples: 采样数量
+        device: 设备
+    
+    Returns:
+        idx: (B, num_samples) 采样索引
+    """
+    # 生成随机数
+    random_values = torch.rand(batch_size, num_samples, device=device)
+    
+    # 扩展维度以便广播
+    # cumsum_weights: (B, N) -> (B, 1, N)
+    # random_values: (B, num_samples) -> (B, num_samples, 1)
+    cumsum_expanded = cumsum_weights.unsqueeze(1)  # (B, 1, N)
+    random_expanded = random_values.unsqueeze(2)   # (B, num_samples, 1)
+    
+    # 比较：cumsum_weights >= random_values
+    # 结果: (B, num_samples, N)
+    comparison = cumsum_expanded >= random_expanded
+    
+    # 找到第一个True的位置（从左到右）
+    # 使用argmax找到第一个True的位置
+    # 如果没有True，argmax会返回0，这是合理的
+    idx = torch.argmax(comparison.float(), dim=2)  # (B, num_samples)
+    
+    return idx
+
+
+def weighted_sampling_alternative(cumsum_weights, batch_size, num_samples, device):
+    """
+    另一种ONNX兼容的加权采样实现，使用循环和条件判断
+    
+    Args:
+        cumsum_weights: (B, N) 累积权重
+        batch_size: 批次大小
+        num_samples: 采样数量
+        device: 设备
+    
+    Returns:
+        idx: (B, num_samples) 采样索引
+    """
+    # 生成随机数
+    random_values = torch.rand(batch_size, num_samples, device=device)
+    
+    # 初始化结果
+    idx = torch.zeros(batch_size, num_samples, dtype=torch.long, device=device)
+    
+    # 使用循环实现（虽然效率较低，但ONNX兼容）
+    for b in range(batch_size):
+        for s in range(num_samples):
+            # 找到第一个cumsum_weights >= random_values的位置
+            for i in range(cumsum_weights.size(1)):
+                if cumsum_weights[b, i] >= random_values[b, s]:
+                    idx[b, s] = i
+                    break
+    
+    return idx
+
+
+def weighted_sampling_vectorized(cumsum_weights, batch_size, num_samples, device):
+    """
+    向量化的ONNX兼容加权采样实现
+    
+    Args:
+        cumsum_weights: (B, N) 累积权重
+        batch_size: 批次大小
+        num_samples: 采样数量
+        device: 设备
+    
+    Returns:
+        idx: (B, num_samples) 采样索引
+    """
+    # 生成随机数
+    random_values = torch.rand(batch_size, num_samples, device=device)
+    
+    # 创建网格索引
+    N = cumsum_weights.size(1)
+    grid_indices = torch.arange(N, device=device).unsqueeze(0).unsqueeze(0)  # (1, 1, N)
+    
+    # 扩展维度
+    cumsum_expanded = cumsum_weights.unsqueeze(1)  # (B, 1, N)
+    random_expanded = random_values.unsqueeze(2)   # (B, num_samples, 1)
+    grid_expanded = grid_indices.expand(batch_size, num_samples, N)  # (B, num_samples, N)
+    
+    # 创建掩码：cumsum_weights >= random_values
+    mask = cumsum_expanded >= random_expanded  # (B, num_samples, N)
+    
+    # 使用掩码选择索引，如果没有匹配的，使用最后一个索引
+    masked_indices = grid_expanded * mask.float()
+    
+    # 找到每个样本的最大索引（第一个True的位置）
+    # 如果没有True，max会返回0
+    idx = torch.max(masked_indices, dim=2)[0].long()
+    
+    return idx
 
 
 def compute_fine_Rt(
@@ -341,7 +447,12 @@ def weighted_procrustes(
     ref_points_centered = ref_points - ref_centroid  # (B, N, 3)
 
     H = src_points_centered.permute(0, 2, 1) @ (weights * ref_points_centered)
-    U, _, V = torch.svd(H)
+    
+    U, _, V = torch.svd(H) #Exporting the operator 'aten::svd' to ONNX opset version 20 is not supported
+    # 替换 torch.svd 为 ONNX 兼容的实现
+    # U, _, V = svd_eigh_replace(H)
+    # U, _, V = svd_onnx_compatible(H)
+    
     Ut, V = U.transpose(1, 2), V
     eye = torch.eye(3).unsqueeze(0).repeat(batch_size, 1, 1).to(src_points.device)
     eye[:, -1, -1] = torch.sign(torch.det(V @ Ut))
@@ -351,7 +462,7 @@ def weighted_procrustes(
     t = t.squeeze(2)
 
     if return_transform:
-        transform = torch.eye(4).unsqueeze(0).repeat(batch_size, 1, 1).cuda()
+        transform = torch.eye(4).unsqueeze(0).repeat(batch_size, 1, 1).to(src_points.device)
         transform[:, :3, :3] = R
         transform[:, :3, 3] = t
         if squeeze_first:
@@ -362,6 +473,7 @@ def weighted_procrustes(
             R = R.squeeze(0)
             t = t.squeeze(0)
         return R, t
+
 
 
 class WeightedProcrustes(nn.Module):
