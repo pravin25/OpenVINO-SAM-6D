@@ -27,12 +27,12 @@ sys.path.append(os.path.join(BASE_DIR, 'model', 'pointnet2'))
 
 def get_parser():
     parser = argparse.ArgumentParser(
-        description="Pose Estimation")
+        description="Pose Estimation Model Convert (CPU Version)")
     # pem
-    parser.add_argument("--gpus",
+    parser.add_argument("--device",
                         type=str,
-                        default="0",
-                        help="path to pretrain model")
+                        default="cpu",
+                        help="device to run on (cpu/cuda)")
     parser.add_argument("--model",
                         type=str,
                         default="pose_estimation_model",
@@ -78,9 +78,9 @@ def init():
 
     cfg = gorilla.Config.fromfile(args.config)
     cfg.exp_name = exp_name
-    cfg.gpus     = args.gpus
+    cfg.device = args.device
     cfg.model_name = args.model
-    cfg.log_dir  = log_dir
+    cfg.log_dir = log_dir
     cfg.test_iter = args.iter
 
     cfg.output_dir = args.output_dir
@@ -91,20 +91,73 @@ def init():
     cfg.seg_path = args.seg_path
 
     cfg.det_score_thresh = args.det_score_thresh
-    # gorilla.utils.set_cuda_visible_devices(gpu_ids = "")
-    gorilla.utils.set_cuda_visible_devices(gpu_ids = cfg.gpus)
+    
+    # 检查设备可用性
+    if cfg.device == "cuda" and not torch.cuda.is_available():
+        print("CUDA不可用，自动切换到CPU")
+        cfg.device = "cpu"
+    
+    print(f"使用设备: {cfg.device}")
 
-    return  cfg
+    return cfg
 
 
+# 尝试导入依赖模块，如果不存在则提供替代实现
+try:
+    from data_utils import (
+        load_im,
+        get_bbox,
+        get_point_cloud_from_depth,
+        get_resize_rgb_choose,
+    )
+    from draw_utils import draw_detections
+except ImportError:
+    print("警告: 无法导入data_utils或draw_utils，使用简化实现")
+    
+    def load_im(path):
+        """加载图像文件"""
+        if path.endswith('.png') or path.endswith('.jpg') or path.endswith('.jpeg'):
+            return cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        else:
+            return np.load(path)
+    
+    def get_bbox(mask):
+        """获取mask的边界框"""
+        rows = np.any(mask, axis=1)
+        cols = np.any(mask, axis=0)
+        y1, y2 = np.where(rows)[0][[0, -1]]
+        x1, x2 = np.where(cols)[0][[0, -1]]
+        return y1, y2, x1, x2
+    
+    def get_point_cloud_from_depth(depth, K):
+        """从深度图生成点云"""
+        h, w = depth.shape
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+        
+        y, x = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
+        x = (x - cx) * depth / fx
+        y = (y - cy) * depth / fy
+        z = depth
+        
+        return np.stack([x, y, z], axis=-1)
+    
+    def get_resize_rgb_choose(choose, bbox, img_size):
+        """获取调整大小后的RGB选择索引"""
+        y1, y2, x1, x2 = bbox
+        h, w = y2 - y1, x2 - x1
+        scale_h, scale_w = img_size / h, img_size / w
+        
+        choose_y = (choose // w).astype(np.float32) * scale_h
+        choose_x = (choose % w).astype(np.float32) * scale_w
+        choose = choose_y * img_size + choose_x
+        return choose.astype(np.int32)
+    
+    def draw_detections(rgb, pred_rot, pred_trans, model_points, K, color=(255, 0, 0)):
+        """绘制检测结果（简化版本）"""
+        # 简化实现，只返回原图
+        return rgb.copy()
 
-from data_utils import (
-    load_im,
-    get_bbox,
-    get_point_cloud_from_depth,
-    get_resize_rgb_choose,
-)
-from draw_utils import draw_detections
 import pycocotools.mask as cocomask
 import trimesh
 
@@ -139,12 +192,13 @@ def visualize(rgb, pred_rot, pred_trans, model_points, K, save_path):
     return concat
 
 
-def _get_template(path, cfg, tem_index=1):
+def _get_template(path, cfg, device, tem_index=1):
     """
     Load a single template (rendered view) for the CAD model.
     Args:
         path: str, directory containing template files
         cfg: config object, must have img_size, n_sample_template_point, rgb_mask_flag
+        device: str, device to place tensors on
         tem_index: int, template index
     Returns:
         rgb: torch.Tensor, shape (3, img_size, img_size), normalized RGB image
@@ -182,12 +236,13 @@ def _get_template(path, cfg, tem_index=1):
     return rgb, rgb_choose, xyz
 
 
-def get_templates(path, cfg):
+def get_templates(path, cfg, device):
     """
     Load multiple rendered templates for the CAD model from disk.
     Args:
         path: str, directory containing template files
         cfg: config object, must have n_template_view, img_size, n_sample_template_point
+        device: str, device to place tensors on
     Returns:
         all_tem: list[torch.Tensor], each (1, 3, img_size, img_size)
         all_tem_pts: list[torch.Tensor], each (1, n_sample_template_point, 3)
@@ -201,19 +256,14 @@ def get_templates(path, cfg):
     total_nView = 42
     for v in range(n_template_view):
         i = int(total_nView / n_template_view * v)
-        tem, tem_choose, tem_pts = _get_template(path, cfg, i)
-
-        all_tem.append(torch.FloatTensor(tem).unsqueeze(0))
-        all_tem_choose.append(torch.IntTensor(tem_choose).long().unsqueeze(0))
-        all_tem_pts.append(torch.FloatTensor(tem_pts).unsqueeze(0))
-
-        # all_tem.append(torch.FloatTensor(tem).unsqueeze(0).cuda())
-        # all_tem_choose.append(torch.IntTensor(tem_choose).long().unsqueeze(0).cuda())
-        # all_tem_pts.append(torch.FloatTensor(tem_pts).unsqueeze(0).cuda())
+        tem, tem_choose, tem_pts = _get_template(path, cfg, device, i)
+        all_tem.append(torch.FloatTensor(tem).unsqueeze(0).to(device))
+        all_tem_choose.append(torch.IntTensor(tem_choose).long().unsqueeze(0).to(device))
+        all_tem_pts.append(torch.FloatTensor(tem_pts).unsqueeze(0).to(device))
     return all_tem, all_tem_pts, all_tem_choose
 
 
-def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_thresh, cfg):
+def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_thresh, cfg, device):
     """
     Prepare test data for pose estimation.
     Args:
@@ -224,6 +274,7 @@ def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_
         seg_path: str, path to segmentation results (json)
         det_score_thresh: float, detection score threshold
         cfg: config object, must have n_sample_observed_point, img_size, rgb_mask_flag
+        device: str, device to place tensors on
     Returns:
         ret_dict: dict with keys:
             'pts': torch.Tensor, (N, n_sample_observed_point, 3)
@@ -257,7 +308,6 @@ def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_
     mesh = trimesh.load_mesh(cad_path)
     model_points = mesh.sample(cfg.n_sample_model_point).astype(np.float32) / 1000.0
     radius = np.max(np.linalg.norm(model_points, axis=1))
-
 
     all_rgb = []
     all_cloud = []
@@ -316,23 +366,14 @@ def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_
         all_dets.append(inst)
 
     ret_dict = {}
-    ret_dict['pts'] = torch.stack(all_cloud)
-    ret_dict['rgb'] = torch.stack(all_rgb)
-    ret_dict['rgb_choose'] = torch.stack(all_rgb_choose)
-    ret_dict['score'] = torch.FloatTensor(all_score)
-
-    # ret_dict['pts'] = torch.stack(all_cloud).cuda()
-    # ret_dict['rgb'] = torch.stack(all_rgb).cuda()
-    # ret_dict['rgb_choose'] = torch.stack(all_rgb_choose).cuda()
-    # ret_dict['score'] = torch.FloatTensor(all_score).cuda()
+    ret_dict['pts'] = torch.stack(all_cloud).to(device)
+    ret_dict['rgb'] = torch.stack(all_rgb).to(device)
+    ret_dict['rgb_choose'] = torch.stack(all_rgb_choose).to(device)
+    ret_dict['score'] = torch.FloatTensor(all_score).to(device)
 
     ninstance = ret_dict['pts'].size(0)
-    ret_dict['model'] = torch.FloatTensor(model_points).unsqueeze(0).repeat(ninstance, 1, 1)
-    ret_dict['K'] = torch.FloatTensor(K).unsqueeze(0).repeat(ninstance, 1, 1)
-
-    # ret_dict['model'] = torch.FloatTensor(model_points).unsqueeze(0).repeat(ninstance, 1, 1).cuda()
-    # ret_dict['K'] = torch.FloatTensor(K).unsqueeze(0).repeat(ninstance, 1, 1).cuda()
-
+    ret_dict['model'] = torch.FloatTensor(model_points).unsqueeze(0).repeat(ninstance, 1, 1).to(device)
+    ret_dict['K'] = torch.FloatTensor(K).unsqueeze(0).repeat(ninstance, 1, 1).to(device)
     return ret_dict, whole_image, whole_pts.reshape(-1, 3), model_points, all_dets
 
 
@@ -345,7 +386,7 @@ class PEMWrapperModel(nn.Module):
             'dense_po', 'dense_fo', 'init_R', 'init_t',
             'pred_R', 'pred_t', 'pred_pose_score'
         ]
-        self.output_key = 'pred_t'  # 加这里
+        self.output_key = 'pred_t'
 
     def forward(self, pts, rgb, rgb_choose, score, model_pts, K,
                 dense_po, dense_fo, init_R, init_t,
@@ -367,35 +408,70 @@ class PEMWrapperModel(nn.Module):
         }
         return self.model(inputs)
 
+
+def create_simplified_model_for_export(original_model, device):
+    """
+    创建一个简化的模型用于ONNX导出，避免自定义算子问题
+    """
+    class SimplifiedPEMModel(nn.Module):
+        def __init__(self, original_model):
+            super().__init__()
+            self.original_model = original_model
+            
+            # 只保留可以导出的部分
+            self.feature_extraction = original_model.feature_extraction
+            
+        def forward(self, pts, rgb, rgb_choose, score, model_pts, K,
+                    dense_po, dense_fo, init_R, init_t,
+                    pred_R, pred_t, pred_pose_score):
+            """
+            简化的前向传播，只包含基本操作
+            """
+            # 这里只实现基本的前向传播，避免自定义算子
+            # 实际使用时需要根据具体模型结构调整
+            
+            # 示例：简单的特征提取和预测
+            batch_size = pts.size(0)
+            
+            # 假设输出平移向量
+            pred_translation = torch.zeros(batch_size, 3, device=pts.device)
+            
+            return pred_translation
+    
+    return SimplifiedPEMModel(original_model)
+
+
 if __name__ == "__main__":
     cfg = init()
 
     random.seed(cfg.rd_seed)
     torch.manual_seed(cfg.rd_seed)
 
+    # 设置设备
+    device = torch.device(cfg.device)
+    print(f"使用设备: {device}")
+
     # model
     print("=> creating model ...")
     MODEL = importlib.import_module(cfg.model_name)
     model = MODEL.Net(cfg.model)
-    # model = model.cuda()
+    model = model.to(device)
     model.eval()
     checkpoint = os.path.join(os.path.dirname((os.path.abspath(__file__))), 'checkpoints', 'sam-6d-pem-base.pth')
-    gorilla.solver.load_checkpoint(model=model, filename=checkpoint)
-    # state_dict = torch.load(checkpoint, map_location='cpu')
-    # model.load_state_dict(state_dict)
-    # 
-    # model = model.to(device)
+    
+    # 加载checkpoint时指定map_location
+    gorilla.solver.load_checkpoint(model=model, filename=checkpoint, map_location=device)
 
     print("=> extracting templates ...")
     tem_path = os.path.join(cfg.output_dir, 'templates')
-    all_tem, all_tem_pts, all_tem_choose = get_templates(tem_path, cfg.test_dataset)
+    all_tem, all_tem_pts, all_tem_choose = get_templates(tem_path, cfg.test_dataset, device)
     with torch.no_grad():
         all_tem_pts, all_tem_feat = model.feature_extraction.get_obj_feats(all_tem, all_tem_pts, all_tem_choose)
 
     print("=> loading input data ...")
     input_data, img, whole_pts, model_points, detections = get_test_data(
         cfg.rgb_path, cfg.depth_path, cfg.cam_path, cfg.cad_path, cfg.seg_path, 
-        cfg.det_score_thresh, cfg.test_dataset
+        cfg.det_score_thresh, cfg.test_dataset, device
     )
     ninstance = input_data['pts'].size(0)
     
@@ -405,30 +481,68 @@ if __name__ == "__main__":
         input_data['dense_fo'] = all_tem_feat.repeat(ninstance,1,1)
         out = model(input_data)
 
-
-    device = torch.device("cpu") #cuda
+    # 创建包装模型用于导出
     pem_wrapped_model = PEMWrapperModel(model).to(device).eval()
-    # pem_wrapped_model = PEMWrapperModel(model.feature_extraction).to(device).eval()
 
+    # 准备示例输入
     example_inputs = tuple(input_data[k] for k in pem_wrapped_model.input_keys)
 
-    onnx_model_path = "pose_estimation_model.onnx"
+    onnx_model_path = "pose_estimation_model_cpu.onnx"
 
-    # PEM ONNX model export
-    torch.onnx.export(
-        pem_wrapped_model,
-        example_inputs,
-        onnx_model_path,
-        opset_version=20,
-        operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
-        input_names=pem_wrapped_model.input_keys,
-        output_names=[pem_wrapped_model.output_key],
-        dynamic_axes={k: {0: "batch"} for k in pem_wrapped_model.input_keys},
-    )
-    print("[ONNX] PEM ONNX model export success")
+    print("=> 尝试ONNX导出...")
+    try:
+        torch.onnx.export(
+            pem_wrapped_model,
+            example_inputs,
+            onnx_model_path,
+            opset_version=20,
+            operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
+            input_names=pem_wrapped_model.input_keys,
+            output_names=[pem_wrapped_model.output_key],
+            dynamic_axes={k: {0: "batch"} for k in pem_wrapped_model.input_keys},
+        )
+        print(f"[ONNX] PEM ONNX model export success: {onnx_model_path}")
+        
+        # 尝试OpenVINO转换
+        print("=> 尝试OpenVINO转换...")
+        try:
+            import openvino as ov
+            from openvino import Core
+            
+            # ov_extension_lib_path = 'model/libopenvino_operation_extension.so'
+            ov_extension_lib_path = '/home/intel/xkd/OpenVINO-SAM-6D/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
+            ov_model_path = "pose_estimation_model_cpu.xml"
 
+            core = Core()
+            
+            core.add_extension(ov_extension_lib_path)
 
+            ov_model = core.read_model(onnx_model_path)
+            ov_compiled_model = core.compile_model(ov_model, 'CPU')
+            
+            ov.save_model(ov_model, ov_model_path)
+            print(f"[OpenVINO] 模型转换成功: {ov_model_path}")
+            
+        except Exception as e:
+            print(f"[OpenVINO] 转换失败: {e}")
+            print("建议：")
+            print("1. 检查ONNX模型是否包含不支持的算子")
+            print("2. 考虑使用简化版本的模型")
+            print("3. 或者直接使用PyTorch模型进行CPU推理")
+            
+    except Exception as e:
+        print(f"[ONNX] 导出失败: {e}")
+        print("原因分析：")
+        print("1. 模型包含自定义CUDA扩展（BallQuery, GroupingOperation等）")
+        print("2. 包含PyTorch特定的操作（org.pytorch.aten.ATen）")
+        print("3. 某些层的输入形状无法确定")
+        
+        print("\n解决方案：")
+        print("1. 使用CPU版本的推理脚本：run_inference_custom_cpu.py")
+        print("2. 或者修改模型架构，移除自定义算子")
+        print("3. 或者使用TorchScript进行模型优化")
 
+    # 保存PyTorch推理结果
     if 'pred_pose_score' in out.keys():
         pose_scores = out['pred_pose_score'] * out['score']
     else:
@@ -444,14 +558,13 @@ if __name__ == "__main__":
         detections[idx]['R'] = list(pred_rot[idx].tolist())
         detections[idx]['t'] = list(pred_trans[idx].tolist())
 
-    with open(os.path.join(f"{cfg.output_dir}/sam6d_results", 'detection_pem.json'), "w") as f:
+    with open(os.path.join(f"{cfg.output_dir}/sam6d_results", 'detection_pem_cpu.json'), "w") as f:
         json.dump(detections, f)
 
     print("=> visualizating ...")
-    save_path = os.path.join(f"{cfg.output_dir}/sam6d_results", 'vis_pem.png')
+    save_path = os.path.join(f"{cfg.output_dir}/sam6d_results", 'vis_pem_cpu.png')
     valid_masks = pose_scores == pose_scores.max()
     K = input_data['K'].detach().cpu().numpy()[valid_masks]
     vis_img = visualize(img, pred_rot[valid_masks], pred_trans[valid_masks], model_points*1000, K, save_path)
     vis_img.save(save_path)
-    print("[Inference Done] Pose_Estimation_Model")
-
+    print("[Inference Done] Pose_Estimation_Model (CPU Version)") 
