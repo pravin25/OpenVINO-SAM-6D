@@ -38,4 +38,4 @@ dependencies:
     - gpustat==1.0.0
     - imgaug
     - einops
-    - openvino
+    - onnx

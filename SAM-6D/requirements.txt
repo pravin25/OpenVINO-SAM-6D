@@ -27,4 +27,4 @@ trimesh==4.0.8
 gpustat==1.0.0
 imgaug
 einops
-openvino
+onnx
