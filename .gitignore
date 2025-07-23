@@ -1,1 +1,10 @@
 **/__pycache__/
+**/build/
+**/dist/
+**/checkpoints/
+**/op_test/
+**/*.egg-info/
+**/*.egg
+**/*.onnx
+**/*.xml
+**/*.bin
