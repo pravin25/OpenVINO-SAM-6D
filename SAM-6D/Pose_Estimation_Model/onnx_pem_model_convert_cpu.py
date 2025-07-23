@@ -381,16 +381,36 @@ class PEMWrapperModel(nn.Module):
     def __init__(self, model):
         super().__init__()
         self.model = model
+        # self.input_keys = [
+        #     'pts', 'rgb', 'rgb_choose', 'score', 'model', 'K',
+        #     'dense_po', 'dense_fo', 'init_R', 'init_t',
+        #     'pred_R', 'pred_t', 'pred_pose_score'
+        # ]
+
         self.input_keys = [
             'pts', 'rgb', 'rgb_choose', 'score', 'model', 'K',
-            'dense_po', 'dense_fo', 'init_R', 'init_t',
-            'pred_R', 'pred_t', 'pred_pose_score'
+            'dense_po', 'dense_fo'
         ]
+
         self.output_key = 'pred_t'
 
     def forward(self, pts, rgb, rgb_choose, score, model_pts, K,
-                dense_po, dense_fo, init_R, init_t,
-                pred_R, pred_t, pred_pose_score):
+                dense_po, dense_fo):
+        # inputs = {
+        #     'pts': pts,
+        #     'rgb': rgb,
+        #     'rgb_choose': rgb_choose,
+        #     'score': score,
+        #     'model': model_pts,
+        #     'K': K,
+        #     'dense_po': dense_po,
+        #     'dense_fo': dense_fo,
+        #     'init_R': init_R,
+        #     'init_t': init_t,
+        #     'pred_R': pred_R,
+        #     'pred_t': pred_t,
+        #     'pred_pose_score': pred_pose_score,
+        # }
         inputs = {
             'pts': pts,
             'rgb': rgb,
@@ -400,45 +420,8 @@ class PEMWrapperModel(nn.Module):
             'K': K,
             'dense_po': dense_po,
             'dense_fo': dense_fo,
-            'init_R': init_R,
-            'init_t': init_t,
-            'pred_R': pred_R,
-            'pred_t': pred_t,
-            'pred_pose_score': pred_pose_score,
         }
         return self.model(inputs)
-
-
-def create_simplified_model_for_export(original_model, device):
-    """
-    创建一个简化的模型用于ONNX导出，避免自定义算子问题
-    """
-    class SimplifiedPEMModel(nn.Module):
-        def __init__(self, original_model):
-            super().__init__()
-            self.original_model = original_model
-            
-            # 只保留可以导出的部分
-            self.feature_extraction = original_model.feature_extraction
-            
-        def forward(self, pts, rgb, rgb_choose, score, model_pts, K,
-                    dense_po, dense_fo, init_R, init_t,
-                    pred_R, pred_t, pred_pose_score):
-            """
-            简化的前向传播，只包含基本操作
-            """
-            # 这里只实现基本的前向传播，避免自定义算子
-            # 实际使用时需要根据具体模型结构调整
-            
-            # 示例：简单的特征提取和预测
-            batch_size = pts.size(0)
-            
-            # 假设输出平移向量
-            pred_translation = torch.zeros(batch_size, 3, device=pts.device)
-            
-            return pred_translation
-    
-    return SimplifiedPEMModel(original_model)
 
 
 if __name__ == "__main__":
@@ -473,6 +456,7 @@ if __name__ == "__main__":
         cfg.rgb_path, cfg.depth_path, cfg.cam_path, cfg.cad_path, cfg.seg_path, 
         cfg.det_score_thresh, cfg.test_dataset, device
     )
+    print(f"[ONNX] input_data.keys: {input_data.keys()}")
     ninstance = input_data['pts'].size(0)
     
     print("=> running model ...")
@@ -487,6 +471,19 @@ if __name__ == "__main__":
     # 准备示例输入
     example_inputs = tuple(input_data[k] for k in pem_wrapped_model.input_keys)
 
+    onnx_input_name = ["pts", "rgb", "rgb_choose", "score", "model", "K", "dense_po", "dense_fo"]
+    onnx_example_inputs = {
+        "pts": input_data['pts'],
+        "rgb": input_data['rgb'],
+        "rgb_choose": input_data['rgb_choose'],
+        "score": input_data['score'],
+        "model": input_data['model'],
+        "K": input_data['K'],
+        "dense_po": input_data['dense_po'],
+        "dense_fo": input_data['dense_fo'],
+    }
+
+    # onnx_model_path = "pose_estimation_model_cpu_wo_fine.onnx"
     onnx_model_path = "pose_estimation_model_cpu.onnx"
 
     print("=> 尝试ONNX导出...")
@@ -497,38 +494,40 @@ if __name__ == "__main__":
             onnx_model_path,
             opset_version=20,
             operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
-            input_names=pem_wrapped_model.input_keys,
+            # operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
+            input_names=onnx_input_name,
             output_names=[pem_wrapped_model.output_key],
             dynamic_axes={k: {0: "batch"} for k in pem_wrapped_model.input_keys},
+            do_constant_folding=False,
         )
         print(f"[ONNX] PEM ONNX model export success: {onnx_model_path}")
         
         # 尝试OpenVINO转换
-        print("=> 尝试OpenVINO转换...")
-        try:
-            import openvino as ov
-            from openvino import Core
+        # print("=> 尝试OpenVINO转换...")
+        # try:
+        #     import openvino as ov
+        #     from openvino import Core
             
-            # ov_extension_lib_path = 'model/libopenvino_operation_extension.so'
-            ov_extension_lib_path = '/home/intel/xkd/OpenVINO-SAM-6D/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
-            ov_model_path = "pose_estimation_model_cpu.xml"
+        #     # ov_extension_lib_path = 'model/libopenvino_operation_extension.so'
+        #     ov_extension_lib_path = '/home/intel/xkd/OpenVINO-SAM-6D/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
+        #     ov_model_path = "pose_estimation_model_cpu.xml"
 
-            core = Core()
+        #     core = Core()
             
-            core.add_extension(ov_extension_lib_path)
+        #     core.add_extension(ov_extension_lib_path)
 
-            ov_model = core.read_model(onnx_model_path)
-            ov_compiled_model = core.compile_model(ov_model, 'CPU')
+        #     ov_model = core.read_model(onnx_model_path)
+        #     ov_compiled_model = core.compile_model(ov_model, 'CPU')
             
-            ov.save_model(ov_model, ov_model_path)
-            print(f"[OpenVINO] 模型转换成功: {ov_model_path}")
+        #     ov.save_model(ov_model, ov_model_path)
+        #     print(f"[OpenVINO] 模型转换成功: {ov_model_path}")
             
-        except Exception as e:
-            print(f"[OpenVINO] 转换失败: {e}")
-            print("建议：")
-            print("1. 检查ONNX模型是否包含不支持的算子")
-            print("2. 考虑使用简化版本的模型")
-            print("3. 或者直接使用PyTorch模型进行CPU推理")
+        # except Exception as e:
+        #     print(f"[OpenVINO] 转换失败: {e}")
+        #     print("建议：")
+        #     print("1. 检查ONNX模型是否包含不支持的算子")
+        #     print("2. 考虑使用简化版本的模型")
+        #     print("3. 或者直接使用PyTorch模型进行CPU推理")
             
     except Exception as e:
         print(f"[ONNX] 导出失败: {e}")
