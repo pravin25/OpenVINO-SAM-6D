@@ -7,68 +7,53 @@
 using namespace TemplateExtension;
 
 //! [op:ctor]
-BallQuery::BallQuery(const ov::Output<ov::Node>& radius, const ov::Output<ov::Node>& nsample, 
-                    const ov::Output<ov::Node>& xyz, const ov::Output<ov::Node>& new_xyz) : Op({radius, nsample, xyz, new_xyz}) {
+BallQuery::BallQuery(const ov::Output<ov::Node>& new_xyz, const ov::Output<ov::Node>& xyz, float radius_f, int nsample_i)
+    : Op({new_xyz, xyz}), m_radius(radius_f), m_nsample(nsample_i) {
     constructor_validate_and_infer_types();
 }
 //! [op:ctor]
 
 //! [op:validate]
 void BallQuery::validate_and_infer_types() {
-    // Operation doesn't change shapes end element type
-    /*
-    Parameters
-    ----------
-    radius : float
-        radius of the balls
-    nsample : int
-        maximum number of features in the balls
-    xyz : torch.Tensor
-        (B, N, 3) xyz coordinates of the features
-    new_xyz : torch.Tensor
-        (B, npoint, 3) centers of the ball query
-
-    Returns
-    -------
-    torch.Tensor
-        (B, npoint, nsample) tensor with the indicies of the features that form the query balls
-    */
-    const auto& radius = input(0);
-    const auto& nsample = input(1);
-    const auto& xyz = input(2);
-    const auto& new_xyz = input(3);
+    if (get_input_size() != 2) {
+        throw std::runtime_error("BallQuery expects 2 inputs (new_xyz, xyz), got " + std::to_string(get_input_size()));
+    }
+    const auto& new_xyz = input(0);
+    // const auto& xyz = input(1);
     auto new_xyz_shape = new_xyz.get_partial_shape();
-    ov::PartialShape output_shape = {new_xyz_shape[0], new_xyz_shape[1], -1}; // 64 as template value. The value of output shape needs to be updated during inference.
-
+    ov::PartialShape output_shape = {new_xyz_shape[0], new_xyz_shape[1], m_nsample};
     set_output_type(0, ov::element::i32, output_shape);
 }
 //! [op:validate]
 
 //! [op:copy]
 std::shared_ptr<ov::Node> BallQuery::clone_with_new_inputs(const ov::OutputVector& new_args) const {
-    // OPENVINO_ASSERT(new_args.size() == 1, "Incorrect number of new arguments");
-
-    return std::make_shared<BallQuery>(new_args.at(0), new_args.at(1), new_args.at(2), new_args.at(3));
+    return std::make_shared<BallQuery>(new_args.at(0), new_args.at(1), m_radius, m_nsample);
 }
 //! [op:copy]
 
 //! [op:visit_attributes]
 bool BallQuery::visit_attributes(ov::AttributeVisitor& visitor) {
+    visitor.on_attribute("radius", m_radius);
+    visitor.on_attribute("nsample", m_nsample);
     return true;
 }
 //! [op:visit_attributes]
 
 //! [op:evaluate]
 bool BallQuery::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
-    const float radius = *inputs[0].data<const float>();
-    const int nsample = *inputs[1].data<const int>();
-    const float* xyz = inputs[2].data<const float>();
-    const float* new_xyz = inputs[3].data<const float>();
+    if (inputs.size() != 2) {
+        throw std::runtime_error("BallQuery expects 2 inputs (new_xyz, xyz), got " + std::to_string(inputs.size()));
+    }
+    // 取 attribute
+    float radius = m_radius;
+    int nsample = m_nsample;
+    const float* new_xyz = inputs[0].data<const float>();
+    const float* xyz = inputs[1].data<const float>();
 
-    int b = inputs[2].get_shape()[0]; // batch size
-    int n = inputs[2].get_shape()[1]; // number of points in xyz
-    int npoint = inputs[3].get_shape()[1]; // number of points in new_xy
-    // int m = inputs[3].get_shape()[1];
+    int b = inputs[1].get_shape()[0]; // batch size
+    int n = inputs[1].get_shape()[1]; // number of points in xyz
+    int npoint = inputs[0].get_shape()[1]; // number of points in new_xyz
 
     ov::PartialShape output_shape = {b, npoint, nsample};
     outputs[0].set_shape(output_shape.to_shape());
@@ -109,16 +94,8 @@ bool BallQuery::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
             ++cnt;
           }
         }
-
-        // 如果找到的点少于nsample，则填充剩余索引为最后一个有效索引或-1
-        // while (cnt < nsample) {
-        //   current_batch_idx[j * nsample + cnt] = (cnt == 0) ? -1 : current_batch_idx[j * nsample + cnt - 1];
-        //   ++cnt;
-        // }
       }
     }
-    // out.set_shape(in.get_shape());
-    // memcpy(out.data(), in.data(), in.get_byte_size());
     return true;
 }
 

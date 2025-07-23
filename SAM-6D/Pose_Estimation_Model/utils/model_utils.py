@@ -448,14 +448,18 @@ def weighted_procrustes(
 
     H = src_points_centered.permute(0, 2, 1) @ (weights * ref_points_centered)
     
-    U, _, V = torch.svd(H) #Exporting the operator 'aten::svd' to ONNX opset version 20 is not supported
+    # U, _, V = torch.svd(H) #Exporting the operator 'aten::svd' to ONNX opset version 20 is not supported
     # 替换 torch.svd 为 ONNX 兼容的实现
+    print(f"[weighted_procrustes] torch.svd input shape: {H.shape}")
+    U, _, V = CustomSVD.apply(H)
+
     # U, _, V = svd_eigh_replace(H)
     # U, _, V = svd_onnx_compatible(H)
     
     Ut, V = U.transpose(1, 2), V
     eye = torch.eye(3).unsqueeze(0).repeat(batch_size, 1, 1).to(src_points.device)
-    eye[:, -1, -1] = torch.sign(torch.det(V @ Ut))
+    # eye[:, -1, -1] = torch.sign(torch.det(V @ Ut))
+    eye[:, -1, -1] = torch.sign(CustomDet.apply(V @ Ut))
     R = V @ eye @ Ut
 
     t = ref_centroid.permute(0, 2, 1) - R @ src_centroid.permute(0, 2, 1)
@@ -474,6 +478,34 @@ def weighted_procrustes(
             t = t.squeeze(0)
         return R, t
 
+
+class CustomSVD(torch.autograd.Function):
+    def __init__(self):
+        super(CustomSVD, self).__init__()
+    
+    @staticmethod
+    def forward(ctx, H):
+        U, S, V = torch.svd(H)
+        ctx.save_for_backward(U, S, V)
+        return U, S, V
+
+    @staticmethod
+    def symbolic(g: torch.Graph, H: torch.Tensor) :
+        return g.op("CustomSVD", H, outputs=3)
+
+class CustomDet(torch.autograd.Function):
+    def __init__(self):
+        super(CustomDet, self).__init__()
+    
+    @staticmethod
+    def forward(ctx, H):
+        det = torch.det(H)
+        ctx.save_for_backward(det)
+        return det
+
+    @staticmethod
+    def symbolic(g: torch.Graph, H: torch.Tensor) :
+        return g.op("CustomDet", H)
 
 
 class WeightedProcrustes(nn.Module):

@@ -281,6 +281,9 @@ grouping_operation = GroupingOperation.apply
 class BallQuery(Function):
     @staticmethod
     def symbolic(g: torch.Graph, radius: float, nsample: int, xyz: torch.Tensor, new_xyz: torch.Tensor) -> torch.Tensor:
+       assert isinstance(radius, float) or isinstance(radius, int)
+       assert isinstance(nsample, int)
+       print(f"[BallQuery] radius: {radius}, nsample: {nsample}")
        return g.op("BallQuery", new_xyz, xyz, radius_f=radius, nsample_i=nsample)
     
     @staticmethod

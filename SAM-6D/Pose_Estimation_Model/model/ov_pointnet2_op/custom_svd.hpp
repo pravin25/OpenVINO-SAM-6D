@@ -13,7 +13,7 @@ namespace TemplateExtension {
 
 class CustomSVD : public ov::op::Op {
 public:
-    OPENVINO_OP("svd");
+    OPENVINO_OP("CustomSVD");
 
     CustomSVD() = default;
     CustomSVD(const ov::Output<ov::Node>& x);
