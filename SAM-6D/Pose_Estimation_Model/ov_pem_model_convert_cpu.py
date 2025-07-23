@@ -495,15 +495,38 @@ if __name__ == "__main__":
         from openvino import Core
         
         # ov_extension_lib_path = 'model/libopenvino_operation_extension.so'
-        ov_extension_lib_path = '/home/intel/xkd/OpenVINO-SAM-6D/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
+        ov_extension_lib_path = './model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
         ov_model_path = "pose_estimation_model_cpu.xml"
 
         core = Core()
-        
         core.add_extension(ov_extension_lib_path)
+        batch_size = 1
+        ov_input_name = {"pts":[batch_size,2048,3], 
+                        "rgb":[batch_size,3,224,224], 
+                        "rgb_choose":[batch_size,2048], 
+                        "score":[batch_size], 
+                        "model":[batch_size,1024,3], 
+                        "K":[batch_size,3,3], 
+                        "dense_po":[batch_size,2048,3], 
+                        "dense_fo":[batch_size,2048,256]}
+        ov_example_inputs = {
+            "pts": input_data['pts'],
+            "rgb": input_data['rgb'],
+            "rgb_choose": input_data['rgb_choose'],
+            "score": input_data['score'],
+            "model": input_data['model'],
+            "K": input_data['K'],
+            "dense_po": input_data['dense_po'],
+            "dense_fo": input_data['dense_fo'],
+        }
+    
+        # ov_model = core.read_model(onnx_model_path)
+        ov_model = ov.convert_model(onnx_model_path, 
+                input=ov_input_name,
+                example_input=ov_example_inputs,
+                extension=ov_extension_lib_path,
+                )
 
-        ov_model = core.read_model(onnx_model_path)
-        # ov_model = 
         ov_compiled_model = core.compile_model(ov_model, 'CPU')
         
         ov.save_model(ov_model, ov_model_path)
