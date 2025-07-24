@@ -381,47 +381,16 @@ class PEMWrapperModel(nn.Module):
     def __init__(self, model):
         super().__init__()
         self.model = model
-        # self.input_keys = [
-        #     'pts', 'rgb', 'rgb_choose', 'score', 'model', 'K',
-        #     'dense_po', 'dense_fo', 'init_R', 'init_t',
-        #     'pred_R', 'pred_t', 'pred_pose_score'
-        # ]
-
         self.input_keys = [
             'pts', 'rgb', 'rgb_choose', 'score', 'model', 'K',
             'dense_po', 'dense_fo'
         ]
-
         self.output_key = 'pred_t'
 
     def forward(self, pts, rgb, rgb_choose, score, model_pts, K,
                 dense_po, dense_fo):
-        # inputs = {
-        #     'pts': pts,
-        #     'rgb': rgb,
-        #     'rgb_choose': rgb_choose,
-        #     'score': score,
-        #     'model': model_pts,
-        #     'K': K,
-        #     'dense_po': dense_po,
-        #     'dense_fo': dense_fo,
-        #     'init_R': init_R,
-        #     'init_t': init_t,
-        #     'pred_R': pred_R,
-        #     'pred_t': pred_t,
-        #     'pred_pose_score': pred_pose_score,
-        # }
-        inputs = {
-            'pts': pts,
-            'rgb': rgb,
-            'rgb_choose': rgb_choose,
-            'score': score,
-            'model': model_pts,
-            'K': K,
-            'dense_po': dense_po,
-            'dense_fo': dense_fo,
-        }
-        return self.model(inputs)
+        # 适配重构后的Net，直接参数传递
+        return self.model(pts, rgb, rgb_choose, score, model_pts, K, dense_po, dense_fo)
 
 
 if __name__ == "__main__":
@@ -463,107 +432,56 @@ if __name__ == "__main__":
     with torch.no_grad():
         input_data['dense_po'] = all_tem_pts.repeat(ninstance,1,1)
         input_data['dense_fo'] = all_tem_feat.repeat(ninstance,1,1)
-        out = model(input_data)
+        model_input_tuple = (
+            input_data['pts'], input_data['rgb'], input_data['rgb_choose'], input_data['score'],
+            input_data['model'], input_data['K'], input_data['dense_po'], input_data['dense_fo']
+        )
+        pred_R, pred_t, pred_pose_score = model(*model_input_tuple)
 
-    # 创建包装模型用于导出
-    pem_wrapped_model = PEMWrapperModel(model).to(device).eval()
-
-    # 准备示例输入
-    example_inputs = tuple(input_data[k] for k in pem_wrapped_model.input_keys)
-
+    # 直接用Net导出，不再用PEMWrapperModel
+    example_inputs = model_input_tuple
     onnx_input_name = ["pts", "rgb", "rgb_choose", "score", "model", "K", "dense_po", "dense_fo"]
-    onnx_example_inputs = {
-        "pts": input_data['pts'],
-        "rgb": input_data['rgb'],
-        "rgb_choose": input_data['rgb_choose'],
-        "score": input_data['score'],
-        "model": input_data['model'],
-        "K": input_data['K'],
-        "dense_po": input_data['dense_po'],
-        "dense_fo": input_data['dense_fo'],
-    }
-
-    # onnx_model_path = "pose_estimation_model_cpu_wo_fine.onnx"
+    onnx_output_name = ["pred_R", "pred_t", "pred_pose_score"]
     onnx_model_path = "pose_estimation_model_cpu.onnx"
 
     print("=> 尝试ONNX导出...")
     try:
         torch.onnx.export(
-            pem_wrapped_model,
+            model,
             example_inputs,
             onnx_model_path,
             opset_version=20,
             operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
-            # operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
             input_names=onnx_input_name,
-            output_names=[pem_wrapped_model.output_key],
-            dynamic_axes={k: {0: "batch"} for k in pem_wrapped_model.input_keys},
+            output_names=onnx_output_name,
+            dynamic_axes={k: {0: "batch"} for k in onnx_input_name},
             do_constant_folding=False,
         )
         print(f"[ONNX] PEM ONNX model export success: {onnx_model_path}")
-        
-        # 尝试OpenVINO转换
-        # print("=> 尝试OpenVINO转换...")
-        # try:
-        #     import openvino as ov
-        #     from openvino import Core
-            
-        #     # ov_extension_lib_path = 'model/libopenvino_operation_extension.so'
-        #     ov_extension_lib_path = '/home/intel/xkd/OpenVINO-SAM-6D/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
-        #     ov_model_path = "pose_estimation_model_cpu.xml"
-
-        #     core = Core()
-            
-        #     core.add_extension(ov_extension_lib_path)
-
-        #     ov_model = core.read_model(onnx_model_path)
-        #     ov_compiled_model = core.compile_model(ov_model, 'CPU')
-            
-        #     ov.save_model(ov_model, ov_model_path)
-        #     print(f"[OpenVINO] 模型转换成功: {ov_model_path}")
-            
-        # except Exception as e:
-        #     print(f"[OpenVINO] 转换失败: {e}")
-        #     print("建议：")
-        #     print("1. 检查ONNX模型是否包含不支持的算子")
-        #     print("2. 考虑使用简化版本的模型")
-        #     print("3. 或者直接使用PyTorch模型进行CPU推理")
             
     except Exception as e:
-        print(f"[ONNX] 导出失败: {e}")
-        print("原因分析：")
-        print("1. 模型包含自定义CUDA扩展（BallQuery, GroupingOperation等）")
-        print("2. 包含PyTorch特定的操作（org.pytorch.aten.ATen）")
-        print("3. 某些层的输入形状无法确定")
-        
-        print("\n解决方案：")
-        print("1. 使用CPU版本的推理脚本：run_inference_custom_cpu.py")
-        print("2. 或者修改模型架构，移除自定义算子")
-        print("3. 或者使用TorchScript进行模型优化")
+        print(f"[ONNX] export failed : {e}")
 
     # 保存PyTorch推理结果
-    if 'pred_pose_score' in out.keys():
-        pose_scores = out['pred_pose_score'] * out['score']
-    else:
-        pose_scores = out['score']
-    pose_scores = pose_scores.detach().cpu().numpy()
-    pred_rot = out['pred_R'].detach().cpu().numpy()
-    pred_trans = out['pred_t'].detach().cpu().numpy() * 1000
+    # pose_scores = pred_pose_score.detach().cpu().numpy()
+    pose_scores = pred_pose_score.detach().cpu().numpy() * input_data['score'].detach().cpu().numpy()
+    pred_rot = pred_R.detach().cpu().numpy()
+    pred_trans = pred_t.detach().cpu().numpy() * 1000
 
     print("=> saving results ...")
     os.makedirs(f"{cfg.output_dir}/sam6d_results", exist_ok=True)
     for idx, det in enumerate(detections):
-        detections[idx]['score'] = float(pose_scores[idx])
-        detections[idx]['R'] = list(pred_rot[idx].tolist())
-        detections[idx]['t'] = list(pred_trans[idx].tolist())
+        det['score'] = float(pose_scores[idx])
+        det['R'] = list(pred_rot[idx].tolist())
+        det['t'] = list(pred_trans[idx].tolist())
 
-    with open(os.path.join(f"{cfg.output_dir}/sam6d_results", 'detection_pem_cpu.json'), "w") as f:
+    with open(os.path.join(f"{cfg.output_dir}/sam6d_results", f'detection_pem_{cfg.device}.json'), "w") as f:
         json.dump(detections, f)
 
     print("=> visualizating ...")
-    save_path = os.path.join(f"{cfg.output_dir}/sam6d_results", 'vis_pem_cpu.png')
+    save_path = os.path.join(f"{cfg.output_dir}/sam6d_results", f'vis_pem_{cfg.device}.png')
     valid_masks = pose_scores == pose_scores.max()
     K = input_data['K'].detach().cpu().numpy()[valid_masks]
     vis_img = visualize(img, pred_rot[valid_masks], pred_trans[valid_masks], model_points*1000, K, save_path)
     vis_img.save(save_path)
-    print("[Inference Done] Pose_Estimation_Model (CPU Version)") 
+    print(f"[Inference Done] Pose_Estimation_Model ({cfg.device} Version)") 
