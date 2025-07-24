@@ -125,43 +125,16 @@ class ViTEncoder(nn.Module):
         self.npoint = npoint
         self.rgb_net = ViT_AE(cfg)
 
-    def forward(self, end_points):
-        rgb = end_points['rgb']
-        rgb_choose = end_points['rgb_choose']
+    def forward(self, pts, rgb, rgb_choose, dense_po, dense_fo):
         dense_fm = self.get_img_feats(rgb, rgb_choose)
-        dense_pm = end_points['pts']
-        assert rgb_choose.size(1) == self.npoint
-
-        if not self.training and 'dense_po' in end_points.keys() and 'dense_fo' in end_points.keys():
-            dense_po = end_points['dense_po'].clone()
-            dense_fo = end_points['dense_fo'].clone()
-
-            # normalize point clouds
+        dense_pm = pts
+        # 兼容推理时 dense_po/dense_fo
+        if dense_po is not None and dense_fo is not None:
             radius = torch.norm(dense_po, dim=2).max(1)[0]
             dense_pm = dense_pm / (radius.reshape(-1, 1, 1) + 1e-6)
             dense_po = dense_po / (radius.reshape(-1, 1, 1) + 1e-6)
-
         else:
-            tem1_rgb = end_points['tem1_rgb']
-            tem1_choose = end_points['tem1_choose']
-            tem1_pts = end_points['tem1_pts']
-            tem2_rgb = end_points['tem2_rgb']
-            tem2_choose = end_points['tem2_choose']
-            tem2_pts = end_points['tem2_pts']
-
-            # normalize point clouds
-            dense_po = torch.cat([tem1_pts, tem2_pts], dim=1)
-            radius = torch.norm(dense_po, dim=2).max(1)[0]
-            dense_pm = dense_pm / (radius.reshape(-1, 1, 1) + 1e-6)
-            tem1_pts = tem1_pts / (radius.reshape(-1, 1, 1) + 1e-6)
-            tem2_pts = tem2_pts / (radius.reshape(-1, 1, 1) + 1e-6)
-
-            dense_po, dense_fo = self.get_obj_feats(
-                [tem1_rgb, tem2_rgb],
-                [tem1_pts, tem2_pts],
-                [tem1_choose, tem2_choose]
-            )
-
+            raise ValueError('dense_po and dense_fo must be provided for export/inference')
         return dense_pm, dense_fm, dense_po, dense_fo, radius
 
     def get_img_feats(self, img, choose):

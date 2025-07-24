@@ -21,10 +21,9 @@ class FinePointMatching(nn.Module):
 
         self.bg_token = nn.Parameter(torch.randn(1, 1, cfg.hidden_dim) * .02)
         self.PE = PositionalEncoding(cfg.hidden_dim, r1=cfg.pe_radius1, r2=cfg.pe_radius2)
-
-        self.transformers = []
-        for _ in range(self.nblock):
-            self.transformers.append(SparseToDenseTransformer(
+        
+        self.transformers = nn.ModuleList([
+            SparseToDenseTransformer(
                 cfg.hidden_dim,
                 num_heads=4,
                 sparse_blocks=['self', 'cross'],
@@ -33,14 +32,12 @@ class FinePointMatching(nn.Module):
                 focusing_factor=cfg.focusing_factor,
                 with_bg_token=True,
                 replace_bg_token=True
-            ))
-        self.transformers = nn.ModuleList(self.transformers)
+            ) for _ in range(self.nblock)
+        ])
 
-    def forward(self, p1, f1, geo1, fps_idx1, p2, f2, geo2, fps_idx2, radius, end_points):
+    def forward(self, p1, f1, geo1, fps_idx1, p2, f2, geo2, fps_idx2, radius, model, init_R, init_t):
         B = p1.size(0)
-
-        init_R = end_points['init_R']
-        init_t = end_points['init_t']
+        
         p1_ = (p1 - init_t.unsqueeze(1)) @ init_R
 
         f1 = self.in_proj(f1) + self.PE(p1_)
@@ -48,11 +45,11 @@ class FinePointMatching(nn.Module):
 
         f2 = self.in_proj(f2) + self.PE(p2)
         f2 = torch.cat([self.bg_token.repeat(B,1,1), f2], dim=1) # adding bg
-
+        
         atten_list = []
         for idx in range(self.nblock):
             f1, f2 = self.transformers[idx](f1, geo1, fps_idx1, f2, geo2, fps_idx2)
-
+            
             if self.training or idx==self.nblock-1:
                 atten_list.append(compute_feature_similarity(
                     self.out_proj(f1),
@@ -61,29 +58,13 @@ class FinePointMatching(nn.Module):
                     self.cfg.temp,
                     self.cfg.normalize_feat
                 ))
-
-        if self.training:
-            gt_R = end_points['rotation_label']
-            gt_t = end_points['translation_label'] / (radius.reshape(-1, 1)+1e-6)
-
-            end_points = compute_correspondence_loss(
-                end_points, atten_list, p1, p2, gt_R, gt_t,
-                dis_thres=self.cfg.loss_dis_thres,
-                loss_str='fine'
-            )
-        else:
-            pred_R, pred_t, pred_pose_score = compute_fine_Rt(
-                atten_list[-1], p1, p2,
-                end_points['model'] / (radius.reshape(-1, 1, 1) + 1e-6),
-            )
-            end_points['pred_R'] = pred_R
-            end_points['pred_t'] = pred_t * (radius.reshape(-1, 1)+1e-6)
-            end_points['pred_pose_score'] = pred_pose_score
-
-        if self.return_feat:
-            return end_points, self.out_proj(f1), self.out_proj(f2)
-        else:
-            return end_points
+        # 只返回最终预测
+        pred_R, pred_t, pred_pose_score = compute_fine_Rt(
+            atten_list[-1], p1, p2,
+            model / (radius.reshape(-1, 1, 1) + 1e-6),
+        )
+        pred_t = pred_t * (radius.reshape(-1, 1)+1e-6) 
+        return pred_R, pred_t, pred_pose_score
 
 
 
