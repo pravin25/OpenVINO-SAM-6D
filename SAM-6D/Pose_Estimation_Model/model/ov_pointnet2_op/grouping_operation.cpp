@@ -29,9 +29,8 @@ void GroupingOperation::validate_and_infer_types() {
 
     auto features_shape = features_input.get_partial_shape();
     auto idx_shape = idx_input.get_partial_shape();
-    // ov::PartialShape output_shape = {features_shape[0], features_shape[1], idx_shape[1], idx_shape[2]}; // In some cases features_shape[1]=0
-    // std::cout<<"========= GroupingOperation::validate_and_infer_types::output_shape ======="<<features_shape[0]<<" "<<features_shape[1]<<" "<<idx_shape[1]<<" "<<idx_shape[2]<<std::endl;
-    ov::PartialShape output_shape = {1, -1, idx_shape[1], idx_shape[2]};
+    // 动态推理输出 shape
+    ov::PartialShape output_shape = {features_shape[0], features_shape[1], idx_shape[1], idx_shape[2]};
     set_output_type(0, ov::element::f32, output_shape);
 }
 //! [op:validate]

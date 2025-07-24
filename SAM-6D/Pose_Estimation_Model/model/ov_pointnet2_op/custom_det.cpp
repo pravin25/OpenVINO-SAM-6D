@@ -21,7 +21,17 @@ void CustomDet::validate_and_infer_types() {
     auto det_shape = det_input.get_partial_shape();
     auto elem_type = get_input_element_type(0);
     // 输出为单个 float
-    set_output_type(0, elem_type, ov::PartialShape{}); // scalar
+    if (det_shape.rank().is_static() && det_shape.rank().get_length() == 3) {
+        auto n1 = det_shape[1];
+        auto n2 = det_shape[2];
+        if (n1 != n2) {
+            throw std::runtime_error("The last two dimensions must be equal (square matrices)");
+        }
+        // 输出shape为batch size
+        set_output_type(0, elem_type, ov::PartialShape{det_shape[0]});
+    } else {
+        throw std::runtime_error("Input must be a 3D tensor of shape (b, n, n)");
+    }
 }
 //! [op:validate]
 
@@ -39,27 +49,25 @@ bool CustomDet::visit_attributes(ov::AttributeVisitor& visitor) {
 
 //! [op:evaluate]
 bool CustomDet::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
-    // 1. 读取输入
     const auto& in = inputs[0];
     auto shape = in.get_shape();
-    if (shape.size() != 2 || shape[0] != shape[1])
-        throw std::runtime_error("Input must be a square 2D matrix");
+    if (shape.size() != 3 || shape[1] != shape[2])
+        throw std::runtime_error("Input must be a 3D tensor with square matrices");
 
-    size_t n = shape[0];
+    size_t batch = shape[0];
+    size_t n = shape[1];
     const float* data = in.data<const float>();
 
-    // 2. 构造Eigen矩阵
-    Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> A(data, n, n);
-
-    // 3. 计算行列式
-    float det = A.determinant();
-
-    // 4. 输出
     auto& out = outputs[0];
-    out.set_shape({}); // scalar
+    out.set_shape({batch});
     float* out_data = out.data<float>();
-    out_data[0] = det;
 
+    for (size_t b = 0; b < batch; ++b) {
+        // 每个batch的起始指针
+        const float* batch_data = data + b * n * n;
+        Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> A(batch_data, n, n);
+        out_data[b] = A.determinant();
+    }
     return true;
 }
 
