@@ -479,13 +479,17 @@ if __name__ == "__main__":
     with torch.no_grad():
         input_data['dense_po'] = all_tem_pts.repeat(ninstance,1,1)
         input_data['dense_fo'] = all_tem_feat.repeat(ninstance,1,1)
-        out = model(input_data)
+        model_input_tuple = (
+            input_data['pts'], input_data['rgb'], input_data['rgb_choose'], input_data['score'],
+            input_data['model'], input_data['K'], input_data['dense_po'], input_data['dense_fo']
+        )
+        pred_R, pred_t, pred_pose_score = model(*model_input_tuple)
 
     # 创建包装模型用于导出
-    pem_wrapped_model = PEMWrapperModel(model).to(device).eval()
+    # pem_wrapped_model = PEMWrapperModel(model).to(device).eval()
 
     # 准备示例输入
-    example_inputs = tuple(input_data[k] for k in pem_wrapped_model.input_keys)
+    # example_inputs = tuple(input_data[k] for k in pem_wrapped_model.input_keys)
 
     onnx_model_path = "pose_estimation_model_cpu.onnx"
     # 尝试OpenVINO转换
@@ -504,18 +508,14 @@ if __name__ == "__main__":
         ov_input_name = {"pts":[batch_size,2048,3], 
                         "rgb":[batch_size,3,224,224], 
                         "rgb_choose":[batch_size,2048], 
-                        "score":[batch_size], 
                         "model":[batch_size,1024,3], 
-                        "K":[batch_size,3,3], 
                         "dense_po":[batch_size,2048,3], 
                         "dense_fo":[batch_size,2048,256]}
         ov_example_inputs = {
             "pts": input_data['pts'],
             "rgb": input_data['rgb'],
             "rgb_choose": input_data['rgb_choose'],
-            "score": input_data['score'],
             "model": input_data['model'],
-            "K": input_data['K'],
             "dense_po": input_data['dense_po'],
             "dense_fo": input_data['dense_fo'],
         }
@@ -541,13 +541,9 @@ if __name__ == "__main__":
 
 
     # 保存PyTorch推理结果
-    if 'pred_pose_score' in out.keys():
-        pose_scores = out['pred_pose_score'] * out['score']
-    else:
-        pose_scores = out['score']
-    pose_scores = pose_scores.detach().cpu().numpy()
-    pred_rot = out['pred_R'].detach().cpu().numpy()
-    pred_trans = out['pred_t'].detach().cpu().numpy() * 1000
+    pose_scores = pred_pose_score.detach().cpu().numpy() * input_data['score'].detach().cpu().numpy()
+    pred_rot = pred_R.detach().cpu().numpy()
+    pred_trans = pred_t.detach().cpu().numpy() * 1000
 
     print("=> saving results ...")
     os.makedirs(f"{cfg.output_dir}/sam6d_results", exist_ok=True)
