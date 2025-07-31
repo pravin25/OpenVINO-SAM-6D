@@ -3,6 +3,7 @@
 //
 
 #include "gather_operation.hpp"
+#include <cmath>
 
 using namespace TemplateExtension;
 
@@ -67,21 +68,89 @@ bool GatherOperation::evaluate(ov::TensorVector& outputs, const ov::TensorVector
     outputs[0].set_shape(output_shape.to_shape());
     auto* out_tensor = outputs[0].data<float>();
 
+    // Initialize output to 0, to avoid uninitialized memory
+    int output_total = b * c * npoints;
+    for (int i = 0; i < output_total; ++i) {
+        out_tensor[i] = 0.0f;
+    }
+    
     for (int i = 0; i < b; ++i) {
-        // 对于每个通道c进行迭代
+        // For each channel c
         for (int l = 0; l < c; ++l) {
-            // 对于每个采样点m进行迭代
+            // For each sample point m
             for (int j = 0; j < npoints; ++j) {
-                // 获取对应原始点的索引
+                // Get the index of the corresponding original point
                 int a = idx[i * npoints + j];
-                if(a >= 0 && a < n) { // 确保索引有效
-                    // 根据索引从points中提取对应的点值写入out
-                    out_tensor[(i * c + l) * npoints + j] = features[(i * c + l) * n + a];
+                if(a >= 0 && a < n) { // Ensure the index is valid
+                    // Correct memory layout calculation
+                    // Input: features[batch][channel][point] = features[i * c * n + l * n + a]
+                    // Output: out_tensor[batch][channel][point] = out_tensor[i * c * npoints + l * npoints + j]
+                    float input_val = features[i * c * n + l * n + a];
+                    
+                    // Check if the input value is NaN or Inf, if so, set to 0
+                    if (std::isnan(input_val) || std::isinf(input_val)) {
+                        out_tensor[i * c * npoints + l * npoints + j] = 0.0f;
+                    } else {
+                        out_tensor[i * c * npoints + l * npoints + j] = input_val;
+                    }
                 } else {
-                    // 如果索引无效，则可以设置一个默认值或者抛出异常等处理方式
-                    out_tensor[(i * c + l) * npoints + j] = 0.0f; // 这里简单地设置为0.0
+                    // If the index is invalid, set to 0.0
+                    out_tensor[i * c * npoints + l * npoints + j] = 0.0f;
                 }
             }
+        }
+    }
+    
+    // Debug: record input data
+    const bool debug = false; // true / false
+    if (debug) {
+        // record features input data
+        int features_total = b * c * n;
+        FILE* fp_features = fopen("output/ov_gather_operation_input.txt", "a");
+        if (fp_features) {
+            fprintf(fp_features, "----- gather_operation features input -----\n");
+            fprintf(fp_features, "Shape: B=%d, C=%d, N=%d\n", b, c, n);
+            for (int i = 0; i < features_total; ++i) {
+                fprintf(fp_features, "%f\n", features[i]);
+            }
+            fclose(fp_features);
+        } else {
+            std::cerr << "[GatherOperation Debug] Failed to open output/ov_gather_operation_input.txt for writing!" << std::endl;
+        }
+        
+        // record idx input data
+        int idx_total = b * npoints;
+        FILE* fp_idx = fopen("output/ov_gather_operation_input.txt", "a");
+        if (fp_idx) {
+            fprintf(fp_idx, "----- gather_operation idx input -----\n");
+            fprintf(fp_idx, "Shape: B=%d, npoints=%d\n", b, npoints);
+            for (int i = 0; i < idx_total; ++i) {
+                fprintf(fp_idx, "%d\n", idx[i]);
+            }
+            fclose(fp_idx);
+        } else {
+            std::cerr << "[GatherOperation Debug] Failed to open output/ov_gather_operation_input.txt for writing!" << std::endl;
+        }
+        
+        // record output data
+        std::cout << "[GatherOperation Debug] out_tensor: ";
+        int total = b * c * npoints;
+        float* out_data = out_tensor;
+        // for (int i = 0; i < total; ++i) {
+        //     std::cout << out_data[i] << ' ';
+        // }
+        std::cout << std::endl;
+        // Save to file, for comparison with PyTorch
+        FILE* fp = fopen("output/ov_gather_operation.txt", "a");
+        if (fp) {
+            fprintf(fp, "----- gather_operation call -----\n");
+            for (int i = 0; i < total; ++i) {
+                fprintf(fp, "%f ", out_data[i]);
+                fprintf(fp, "\n");
+            }
+            fclose(fp);
+        } else {
+            std::cerr << "[GatherOperation Debug] Failed to open output/ov_gather_operation.txt for writing!" << std::endl;
         }
     }
     // out.set_shape(in.get_shape());

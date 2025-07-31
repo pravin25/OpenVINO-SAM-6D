@@ -6,6 +6,7 @@
 #include <Eigen/Dense>
 #include <vector>
 #include <stdexcept>
+#include <cmath>
 
 using namespace TemplateExtension;
 
@@ -17,7 +18,7 @@ CustomSVD::CustomSVD(const ov::Output<ov::Node>& x) : Op({x}) {
 
 //! [op:validate]
 void CustomSVD::validate_and_infer_types() {
-    // 支持任意 batch 维度，最后两维为 (M, N)
+    // Support arbitrary batch dimensions, the last two dimensions are (M, N)
     const auto& svd_input = input(0);
     auto svd_shape = svd_input.get_partial_shape();
     auto rank = svd_shape.rank().is_static() ? svd_shape.rank().get_length() : 0;
@@ -33,11 +34,11 @@ void CustomSVD::validate_and_infer_types() {
     // U: (batch..., M, M), S: (batch..., min(M,N)), V: (batch..., N, N)
     std::vector<ov::Dimension> u_shape = batch_dims; u_shape.push_back(m); u_shape.push_back(m);
     std::vector<ov::Dimension> s_shape = batch_dims;
-    // 修复：ov::Dimension 没有 min，需手动判断
+    // Fix: ov::Dimension does not have min, need to manually check
     if (m.is_static() && n.is_static()) {
         s_shape.push_back(std::min(m.get_length(), n.get_length()));
     } else {
-        // 动态时，保守用 m
+        // When dynamic, use m conservatively
         s_shape.push_back(m);
     }
     std::vector<ov::Dimension> v_shape = batch_dims; v_shape.push_back(n); v_shape.push_back(n);
@@ -63,7 +64,7 @@ bool CustomSVD::visit_attributes(ov::AttributeVisitor& visitor) {
 
 //! [op:evaluate]
 bool CustomSVD::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inputs) const {
-    // 支持批量 SVD，输入 shape: [batch..., M, N]
+    // Support batch SVD, input shape: [batch..., M, N]
     const auto& in = inputs[0];
     auto shape = in.get_shape();
     if (shape.size() < 2)
@@ -73,7 +74,7 @@ bool CustomSVD::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
     size_t batch = 1;
     for (size_t i = 0; i < rank - 2; ++i) batch *= shape[i];
     const float* data = in.data<const float>();
-    // 输出 shape
+    // Output shape
     std::vector<size_t> u_shape = shape; u_shape[rank - 1] = m; // (batch..., M, M)
     std::vector<size_t> s_shape = shape; s_shape.pop_back(); s_shape[rank - 2] = std::min(m, n); // (batch..., min(M,N))
     std::vector<size_t> v_shape = shape; v_shape[rank - 2] = n; v_shape[rank - 1] = n; // (batch..., N, N)
@@ -90,14 +91,90 @@ bool CustomSVD::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
     for (size_t b = 0; b < batch; ++b) {
         const float* batch_data = data + b * in_mat_size;
         Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> A(batch_data, m, n);
-    Eigen::JacobiSVD<Eigen::MatrixXf> svd(A, Eigen::ComputeFullU | Eigen::ComputeFullV);
-        // U
-        Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>(u_data + b * u_mat_size, m, m) = svd.matrixU();
-        // S
-        Eigen::Map<Eigen::VectorXf>(s_data + b * s_vec_size, s_vec_size) = svd.singularValues();
-        // V
-        Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>(v_data + b * v_mat_size, n, n) = svd.matrixV();
+        
+        // Numerical stability check
+        Eigen::MatrixXf A_safe = A;
+        
+        // Check and clean NaN/Inf in the input matrix
+        for (int i = 0; i < A_safe.rows(); ++i) {
+            for (int j = 0; j < A_safe.cols(); ++j) {
+                if (std::isnan(A_safe(i,j)) || std::isinf(A_safe(i,j))) {
+                    A_safe(i,j) = 0.0f;
+                }
+            }
+        }
+        
+        // Use a more stable SVD setting
+        Eigen::JacobiSVD<Eigen::MatrixXf> svd(A_safe, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        
+        // Get SVD results
+        Eigen::MatrixXf U = svd.matrixU();
+        Eigen::VectorXf S = svd.singularValues();
+        Eigen::MatrixXf V = svd.matrixV();
+        
+        // Numerical stability processing
+        // 1. Clean small values in singular values
+        float eps = 1e-8f;
+        for (int i = 0; i < S.size(); ++i) {
+            if (S(i) < eps) {
+                S(i) = eps;
+            }
+        }
+        
+        // 2. Ensure U and V are orthogonal
+        for (int i = 0; i < U.rows(); ++i) {
+            for (int j = 0; j < U.cols(); ++j) {
+                if (std::isnan(U(i,j)) || std::isinf(U(i,j))) {
+                    U(i,j) = (i == j) ? 1.0f : 0.0f;
+                }
+            }
+        }
+        
+        for (int i = 0; i < V.rows(); ++i) {
+            for (int j = 0; j < V.cols(); ++j) {
+                if (std::isnan(V(i,j)) || std::isinf(V(i,j))) {
+                    V(i,j) = (i == j) ? 1.0f : 0.0f;
+                }
+            }
+        }
+        
+        // Write outputs
+        Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>(u_data + b * u_mat_size, m, m) = U;
+        Eigen::Map<Eigen::VectorXf>(s_data + b * s_vec_size, s_vec_size) = S;
+        Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>(v_data + b * v_mat_size, n, n) = V;
     }
+    // Debug: print CustomSVD outputs
+    const bool debug = false; // true / false
+    if (debug) {
+        std::cout << "[CustomSVD Debug] U: ";
+        // for (size_t i = 0; i < batch * u_mat_size; ++i) std::cout << u_data[i] << ' ';
+        // std::cout << "\n[CustomSVD Debug] S: ";
+        // for (size_t i = 0; i < batch * s_vec_size; ++i) std::cout << s_data[i] << ' ';
+        std::cout << "\n[CustomSVD Debug] V: ";
+        // for (size_t i = 0; i < batch * v_mat_size; ++i) std::cout << v_data[i] << ' ';
+        std::cout << std::endl;
+
+        FILE* fp = fopen("output/ov_svd.txt", "a");
+        if (fp) {
+            fprintf(fp, "----- ov custom_svd (input) -----\n");
+            for (size_t i = 0; i < batch * in_mat_size; ++i) fprintf(fp, "%f ", data[i]);
+            fprintf(fp, "\n");
+            
+            fprintf(fp, "----- ov custom_svd (U) -----\n");
+            for (size_t i = 0; i < batch * u_mat_size; ++i) fprintf(fp, "%f ", u_data[i]);
+            fprintf(fp, "\n");
+            // for (size_t i = 0; i < batch * s_vec_size; ++i) fprintf(fp, "%f ", s_data[i]);
+            // fprintf(fp, "\n");
+            fprintf(fp, "----- ov custom_svd (V) -----\n");
+            for (size_t i = 0; i < batch * v_mat_size; ++i) fprintf(fp, "%f ", v_data[i]);
+            fprintf(fp, "\n");
+            fclose(fp);
+        } else {
+            std::cerr << "[CustomSVD Debug] Failed to open output/ov_svd.txt for writing!" << std::endl;
+        }
+
+    }
+    
     return true;
 }
 

@@ -66,14 +66,14 @@ bool FurthestPointSampling::evaluate(ov::TensorVector& outputs, const ov::Tensor
     }
 
     for (int batch_index = 0; batch_index < b; ++batch_index) {
-        // 每个batch中的起始位置
+        // Each batch's starting position
         const float *current_dataset = xyz + batch_index * n * 3;
         int *current_idxs = out_data + batch_index * npoint;
 
-        // 初始化temp数组为最大值，表示初始时每个点到已选点集的距离未知或无限大
+        // Initialize temp array to maximum value, representing the distance from each point to the selected point set is unknown or infinite
         std::vector<float> temp(n, std::numeric_limits<float>::max());
 
-        // 初始化第一个点
+        // Initialize the first point
         current_idxs[0] = 0;
         for (int j = 1; j < npoint; ++j) {
             int besti = 0;
@@ -82,13 +82,13 @@ bool FurthestPointSampling::evaluate(ov::TensorVector& outputs, const ov::Tensor
             float y1 = current_dataset[current_idxs[j - 1] * 3 + 1];
             float z1 = current_dataset[current_idxs[j - 1] * 3 + 2];
 
-            // 计算每个点的距离，并找到最远的点
+            // Calculate the distance of each point, and find the farthest point
             for (int k = 0; k < n; ++k) {
                 float x2 = current_dataset[k * 3 + 0];
                 float y2 = current_dataset[k * 3 + 1];
                 float z2 = current_dataset[k * 3 + 2];
                 float mag = x2 * x2 + y2 * y2 + z2 * z2;
-                if (mag <= 1e-3) continue;
+                // if (mag <= 1e-3) continue;
 
                 float d = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1) + (z2 - z1) * (z2 - z1);
                 float d2 = std::min(d, temp[k]);
@@ -99,11 +99,35 @@ bool FurthestPointSampling::evaluate(ov::TensorVector& outputs, const ov::Tensor
                 }
             }
 
-            // 更新下一个选择的点
+            // Update the next selected point
             current_idxs[j] = besti;
         }
     }
 
+    // Debug: print FurthestPointSampling out_tensor
+    const bool debug = false; // true / false
+    if (debug) {
+        std::cout << "[FurthestPointSampling Debug] out_tensor: ";
+        int total = b * npoint;
+        int* out_ptr = out_data;
+        // for (int i = 0; i < total; ++i) {
+        //     std::cout << out_ptr[i] << ' ';
+        // }
+        std::cout << std::endl;
+        // Save to file for comparison with PyTorch Op output
+        FILE* fp = fopen("output/ov_furthest_point_sampling.txt", "a");
+        if (fp) {
+            fprintf(fp, "----- furthest_point_sampling call -----\n");
+            for (int i = 0; i < total; ++i) {
+                fprintf(fp, "%d ", out_ptr[i]);
+                fprintf(fp, "\n");
+            }
+            fprintf(fp, "\n");
+            fclose(fp);
+        } else {
+            std::cerr << "[FurthestPointSampling Debug] Failed to open output/ov_furthest_point_sampling.txt for writing!" << std::endl;
+        }
+    }
     // out.set_shape(in.get_shape());
     // memcpy(out.data(), in.data(), in.get_byte_size());
     return true;

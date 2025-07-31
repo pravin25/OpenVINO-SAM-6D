@@ -63,7 +63,7 @@ bool BallQuery::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
     float radius2 = radius * radius;
 
     for (int batch_index = 0; batch_index < b; ++batch_index) {
-      // 每个batch中的起始位置
+      // Each batch's starting position
       const float *current_xyz = xyz + batch_index * n * 3;
       const float *current_new_xyz = new_xyz + batch_index * npoint * 3;
       int *current_batch_idx = current_idx + batch_index * npoint * nsample;
@@ -74,7 +74,7 @@ bool BallQuery::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
         float new_z = current_new_xyz[j * 3 + 2];
         int cnt = 0;
 
-        // 遍历所有原始点以找到在指定半径内的点
+        // Iterate over all original points to find points within the specified radius
         for (int k = 0; k < n && cnt < nsample; ++k) {
           float x = current_xyz[k * 3 + 0];
           float y = current_xyz[k * 3 + 1];
@@ -85,7 +85,7 @@ bool BallQuery::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
 
           if (d2 < radius2) {
             if (cnt == 0) {
-              // 初始化索引数组，如果找不到足够的邻居，则重复最后一个有效的邻居索引
+              // Initialize index array, if not enough neighbors, repeat the last valid neighbor index
               for (int l = 0; l < nsample; ++l) {
                 current_batch_idx[j * nsample + l] = k;
               }
@@ -95,6 +95,29 @@ bool BallQuery::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
           }
         }
       }
+    }
+    // Debug: print BallQuery out_tensor 
+    const bool debug = false; // true / false
+    if (debug) {
+        std::cout << "[BallQuery Debug] out_tensor: ";
+        int total = b * npoint * nsample;
+        int* out_data = out_tensor.data<int>();
+        // for (int i = 0; i < total; ++i) {
+        //     std::cout << out_data[i] << ' ';
+        // }
+        std::cout << std::endl;
+        // Save to file, for comparison with PyTorch
+        FILE* fp = fopen("output/ov_ball_query.txt", "a");
+        if (fp) {
+            fprintf(fp, "----- ball_query call -----\n");
+            for (int i = 0; i < total; ++i) {
+                fprintf(fp, "%d ", out_data[i]);
+                fprintf(fp, "\n");
+            }
+            fclose(fp);
+        } else {
+            std::cerr << "[BallQuery Debug] Failed to open output/ov_ball_query.txt for writing!" << std::endl;
+        }
     }
     return true;
 }

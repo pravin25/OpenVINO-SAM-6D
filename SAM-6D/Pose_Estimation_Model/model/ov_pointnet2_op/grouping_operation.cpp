@@ -29,7 +29,7 @@ void GroupingOperation::validate_and_infer_types() {
 
     auto features_shape = features_input.get_partial_shape();
     auto idx_shape = idx_input.get_partial_shape();
-    // 动态推理输出 shape
+    // Dynamic inference output shape
     ov::PartialShape output_shape = {features_shape[0], features_shape[1], idx_shape[1], idx_shape[2]};
     set_output_type(0, ov::element::f32, output_shape);
 }
@@ -79,6 +79,29 @@ bool GroupingOperation::evaluate(ov::TensorVector& outputs, const ov::TensorVect
                     }
                 }
             }
+        }
+    }
+    // Debug: print GroupingOperation out_tensor
+    const bool debug = false; // true / false
+    if (debug) {
+        std::cout << "[GroupingOperation Debug] out_tensor: ";
+        int total = b * c * npoint * nsample;
+        float* out_data = out_tensor.data<float>();
+            // for (int i = 0; i < total; ++i) {
+            //     std::cout << out_data[i] << ' ';
+            // }
+        std::cout << std::endl;
+
+        FILE* fp = fopen("output/ov_grouping_operation.txt", "a");
+        if (fp) {
+            fprintf(fp, "----- grouping_operation call -----\n");
+            for (int i = 0; i < total; ++i) {
+                fprintf(fp, "%f ", out_data[i]);
+                fprintf(fp, "\n");
+            }
+            fclose(fp);
+        } else {
+            std::cerr << "[GroupingOperation Debug] Failed to open output/ov_grouping_operation.txt for writing!" << std::endl;
         }
     }
     return true;

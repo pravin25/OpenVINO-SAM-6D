@@ -63,11 +63,28 @@ bool CustomDet::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
     float* out_data = out.data<float>();
 
     for (size_t b = 0; b < batch; ++b) {
-        // 每个batch的起始指针
+        // Each batch's starting pointer
         const float* batch_data = data + b * n * n;
         Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> A(batch_data, n, n);
         out_data[b] = A.determinant();
     }
+    // Debug: print CustomDet out_data
+    const bool debug = false; // true / false
+    if (debug) {
+        std::cout << "[CustomDet Debug] out_data: ";
+        FILE* fp = fopen("output/ov_det.txt", "a");
+        if (fp) {
+            fprintf(fp, "----- custom_det call -----\n");
+            for (size_t b = 0; b < batch; ++b) {
+                fprintf(fp, "%f ", out_data[b]);
+                fprintf(fp, "\n");
+            }
+            fclose(fp);
+        } else {
+            std::cerr << "[CustomDet Debug] Failed to open output/ov_custom_det.txt for writing!" << std::endl;
+        }
+    }
+    
     return true;
 }
 
