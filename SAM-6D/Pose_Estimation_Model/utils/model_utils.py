@@ -9,6 +9,7 @@ from pointnet2_utils import (
     furthest_point_sample,
 )
 
+DEBUG_FLAG = False
 
 class LayerNorm2d(nn.Module):
     def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
@@ -57,9 +58,28 @@ def sample_pts_feats(pts, feats, npoint=2048, return_index=False):
     '''
     # sample_idx = furthest_point_sample(pts, npoint)
     sample_idx = furthest_point_sample(pts, torch.tensor(npoint))
+    if DEBUG_FLAG:
+        # print(f"[Torch] FurthestPointSampling output: {sample_idx}")
+        flat_sample_idx = sample_idx.cpu().detach().numpy().reshape(-1)
+        with open('output/torch_furthest_point_sampling.txt', 'a') as f:
+            f.write('--- furthest_point_sample ---\n')
+            f.write(' '.join(f'{x:.6f}' for x in flat_sample_idx) + '\n')
+    
     pts = gather_operation(pts.transpose(1,2).contiguous(), sample_idx)
+    if DEBUG_FLAG:
+        flat_pts = pts.cpu().detach().numpy().reshape(-1)
+        # print(f"[Torch] gather_operation(pts) output: {flat_pts}")
+        with open('output/torch_gather_operation.txt', 'a') as f:
+            f.write('--- gather_operation(pts) ---\n')
+            f.write(' '.join(f'{x:.6f}' for x in flat_pts) + '\n')
     pts = pts.transpose(1,2).contiguous()
     feats = gather_operation(feats.transpose(1,2).contiguous(), sample_idx)
+    if DEBUG_FLAG:
+        flat_feats = feats.cpu().detach().numpy().reshape(-1)
+        # print(f"[Torch] gather_operation(feats) output: {flat_feats}")
+        with open('output/torch_gather_operation.txt', 'a') as f:
+            f.write('--- gather_operation(feats) ---\n')
+            f.write(' '.join(f'{x:.6f}' for x in flat_feats) + '\n')
     feats = feats.transpose(1,2).contiguous()
     if return_index:
         return pts, feats, sample_idx
@@ -219,9 +239,22 @@ def compute_coarse_Rt(
     cumsum_weights /= (cumsum_weights[:, -1].unsqueeze(1).contiguous()+1e-8)
     
     # idx = torch.searchsorted(cumsum_weights, torch.rand(B, n_proposal1*3, device=device))  #Exporting the operator 'aten::searchsorted' to ONNX opset version 20 is not supported
-    # 替换 torch.searchsorted 为 ONNX 兼容的实现
-    idx = weighted_sampling_onnx_compatible(cumsum_weights, B, n_proposal1*3, device)
+    # Replace torch.searchsorted with ONNX compatible implementation
+
+    # idx = CustomSearchSorted.apply(cumsum_weights, torch.rand(B, n_proposal1*3, device=device))
+    # if DEBUG_FLAG:
+    #     flat_idx = idx.cpu().detach().numpy().reshape(-1)
+    #     with open('output/torch_search_sorted.txt', 'a') as f:
+    #         f.write('--- torch CustomSearchSorted ---\n')
+    #         f.write(' '.join(f'{x:.2f}' for x in flat_idx) + '\n')
     
+    idx = weighted_sampling_onnx_compatible(cumsum_weights, B, n_proposal1*3, device)
+    if DEBUG_FLAG:
+        flat_idx = idx.cpu().detach().numpy().reshape(-1)
+        with open('output/torch_search_sorted.txt', 'a') as f:
+            f.write('--- torch CustomSearchSorted onnx compatible ---\n')
+            f.write(' '.join(f'{x:.6f}' for x in flat_idx) + '\n')
+
     idx1, idx2 = idx.div(N2, rounding_mode='floor'), idx % N2
     idx1 = torch.clamp(idx1, max=N1-1).unsqueeze(2).repeat(1,1,3)
     idx2 = torch.clamp(idx2, max=N2-1).unsqueeze(2).repeat(1,1,3)
@@ -253,103 +286,29 @@ def compute_coarse_Rt(
 
 def weighted_sampling_onnx_compatible(cumsum_weights, batch_size, num_samples, device):
     """
-    ONNX兼容的加权采样实现，替代torch.searchsorted
+    ONNX compatible weighted sampling implementation, replacing torch.searchsorted
     
     Args:
-        cumsum_weights: (B, N) 累积权重
-        batch_size: 批次大小
-        num_samples: 采样数量
-        device: 设备
+        cumsum_weights: (B, N) cumulative weights
+        batch_size: batch size
+        num_samples: number of samples
+        device: device
     
     Returns:
-        idx: (B, num_samples) 采样索引
+        idx: (B, num_samples) sample index
     """
-    # 生成随机数
+    # Generate random numbers
     random_values = torch.rand(batch_size, num_samples, device=device)
-    
-    # 扩展维度以便广播
+
     # cumsum_weights: (B, N) -> (B, 1, N)
     # random_values: (B, num_samples) -> (B, num_samples, 1)
     cumsum_expanded = cumsum_weights.unsqueeze(1)  # (B, 1, N)
     random_expanded = random_values.unsqueeze(2)   # (B, num_samples, 1)
     
-    # 比较：cumsum_weights >= random_values
-    # 结果: (B, num_samples, N)
+    # Compare: cumsum_weights >= random_values
+    # Result: (B, num_samples, N)
     comparison = cumsum_expanded >= random_expanded
-    
-    # 找到第一个True的位置（从左到右）
-    # 使用argmax找到第一个True的位置
-    # 如果没有True，argmax会返回0，这是合理的
     idx = torch.argmax(comparison.float(), dim=2)  # (B, num_samples)
-    
-    return idx
-
-
-def weighted_sampling_alternative(cumsum_weights, batch_size, num_samples, device):
-    """
-    另一种ONNX兼容的加权采样实现，使用循环和条件判断
-    
-    Args:
-        cumsum_weights: (B, N) 累积权重
-        batch_size: 批次大小
-        num_samples: 采样数量
-        device: 设备
-    
-    Returns:
-        idx: (B, num_samples) 采样索引
-    """
-    # 生成随机数
-    random_values = torch.rand(batch_size, num_samples, device=device)
-    
-    # 初始化结果
-    idx = torch.zeros(batch_size, num_samples, dtype=torch.long, device=device)
-    
-    # 使用循环实现（虽然效率较低，但ONNX兼容）
-    for b in range(batch_size):
-        for s in range(num_samples):
-            # 找到第一个cumsum_weights >= random_values的位置
-            for i in range(cumsum_weights.size(1)):
-                if cumsum_weights[b, i] >= random_values[b, s]:
-                    idx[b, s] = i
-                    break
-    
-    return idx
-
-
-def weighted_sampling_vectorized(cumsum_weights, batch_size, num_samples, device):
-    """
-    向量化的ONNX兼容加权采样实现
-    
-    Args:
-        cumsum_weights: (B, N) 累积权重
-        batch_size: 批次大小
-        num_samples: 采样数量
-        device: 设备
-    
-    Returns:
-        idx: (B, num_samples) 采样索引
-    """
-    # 生成随机数
-    random_values = torch.rand(batch_size, num_samples, device=device)
-    
-    # 创建网格索引
-    N = cumsum_weights.size(1)
-    grid_indices = torch.arange(N, device=device).unsqueeze(0).unsqueeze(0)  # (1, 1, N)
-    
-    # 扩展维度
-    cumsum_expanded = cumsum_weights.unsqueeze(1)  # (B, 1, N)
-    random_expanded = random_values.unsqueeze(2)   # (B, num_samples, 1)
-    grid_expanded = grid_indices.expand(batch_size, num_samples, N)  # (B, num_samples, N)
-    
-    # 创建掩码：cumsum_weights >= random_values
-    mask = cumsum_expanded >= random_expanded  # (B, num_samples, N)
-    
-    # 使用掩码选择索引，如果没有匹配的，使用最后一个索引
-    masked_indices = grid_expanded * mask.float()
-    
-    # 找到每个样本的最大索引（第一个True的位置）
-    # 如果没有True，max会返回0
-    idx = torch.max(masked_indices, dim=2)[0].long()
     
     return idx
 
@@ -388,7 +347,6 @@ def compute_fine_Rt(
     pose_score = pose_score * mask.mean(1)
 
     return pred_R, pred_t, pose_score
-
 
 
 def weighted_procrustes(
@@ -449,9 +407,20 @@ def weighted_procrustes(
     H = src_points_centered.permute(0, 2, 1) @ (weights * ref_points_centered)
     
     # U, _, V = torch.svd(H) #Exporting the operator 'aten::svd' to ONNX opset version 20 is not supported
-    # 替换 torch.svd 为 ONNX 兼容的实现
+    # Replace torch.svd with ONNX compatible implementation
     print(f"[weighted_procrustes] torch.svd input shape: {H.shape}")
     U, _, V = CustomSVD.apply(H)
+    if DEBUG_FLAG:
+        flat_H = H.cpu().detach().numpy().reshape(-1)
+        flat_U = U.cpu().detach().numpy().reshape(-1)
+        flat_V = V.cpu().detach().numpy().reshape(-1)
+        with open('output/torch_svd.txt', 'a') as f:
+            f.write('--- torch custom_svd (input) ---\n')
+            f.write(' '.join(f'{x:.2f}' for x in flat_H) + '\n')
+            f.write('--- torch custom_svd (U) ---\n')
+            f.write(' '.join(f'{x:.2f}' for x in flat_U) + '\n')
+            f.write('--- torch custom_svd (V) ---\n')
+            f.write(' '.join(f'{x:.2f}' for x in flat_V) + '\n')
 
     # U, _, V = svd_eigh_replace(H)
     # U, _, V = svd_onnx_compatible(H)
@@ -459,7 +428,13 @@ def weighted_procrustes(
     Ut, V = U.transpose(1, 2), V
     eye = torch.eye(3).unsqueeze(0).repeat(batch_size, 1, 1).to(src_points.device)
     # eye[:, -1, -1] = torch.sign(torch.det(V @ Ut))
-    eye[:, -1, -1] = torch.sign(CustomDet.apply(V @ Ut))
+    det_V_Ut = CustomDet.apply(V @ Ut)
+    if DEBUG_FLAG:
+        flat_det_V_Ut = det_V_Ut.cpu().detach().numpy().reshape(-1)
+        with open('output/torch_det.txt', 'a') as f:
+            f.write('--- torch_det(V @ Ut) ---\n')
+            f.write(' '.join(f'{x:.6f}' for x in flat_det_V_Ut) + '\n')
+    eye[:, -1, -1] = torch.sign(det_V_Ut)
     R = V @ eye @ Ut
 
     t = ref_centroid.permute(0, 2, 1) - R @ src_centroid.permute(0, 2, 1)
@@ -478,6 +453,39 @@ def weighted_procrustes(
             t = t.squeeze(0)
         return R, t
 
+
+
+class WeightedProcrustes(nn.Module):
+    def __init__(self, weight_thresh=0.5, eps=1e-5, return_transform=False):
+        super(WeightedProcrustes, self).__init__()
+        self.weight_thresh = weight_thresh
+        self.eps = eps
+        self.return_transform = return_transform
+
+    def forward(self, src_points, tgt_points, weights=None,src_centroid = None,ref_centroid = None):
+        return weighted_procrustes(
+            src_points,
+            tgt_points,
+            weights=weights,
+            weight_thresh=self.weight_thresh,
+            eps=self.eps,
+            return_transform=self.return_transform,
+            src_centroid=src_centroid,
+            ref_centroid=ref_centroid
+        )
+
+
+class CustomSearchSorted(torch.autograd.Function):
+    def __init__(self):
+        super(CustomSearchSorted, self).__init__()
+
+    @staticmethod
+    def forward(ctx, cumsum_weights, random_values):
+        return torch.searchsorted(cumsum_weights, random_values)
+    
+    @staticmethod
+    def symbolic(g, cumsum_weights, random_values):
+        return g.op("CustomSearchSorted", cumsum_weights, random_values, outputs=1)
 
 class CustomSVD(torch.autograd.Function):
     def __init__(self):
@@ -505,25 +513,28 @@ class CustomDet(torch.autograd.Function):
 
     @staticmethod
     def symbolic(g: torch.Graph, H: torch.Tensor) :
-        return g.op("CustomDet", H)
+        return g.op("CustomDet", H, outputs=1)
 
 
-class WeightedProcrustes(nn.Module):
-    def __init__(self, weight_thresh=0.5, eps=1e-5, return_transform=False):
-        super(WeightedProcrustes, self).__init__()
-        self.weight_thresh = weight_thresh
-        self.eps = eps
-        self.return_transform = return_transform
+class CustomDebugNode(torch.autograd.Function):
+    def __init__(self):
+        super(CustomDebugNode, self).__init__()
 
-    def forward(self, src_points, tgt_points, weights=None,src_centroid = None,ref_centroid = None):
-        return weighted_procrustes(
-            src_points,
-            tgt_points,
-            weights=weights,
-            weight_thresh=self.weight_thresh,
-            eps=self.eps,
-            return_transform=self.return_transform,
-            src_centroid=src_centroid,
-            ref_centroid=ref_centroid
-        )
-
+    @staticmethod
+    def forward(ctx, input):
+        flat_input = input.cpu().detach().numpy().reshape(-1)
+        print(f"[Shape]: {input.shape} , type: {type(input)}")
+        with open('output/torch_debug_node.txt', 'a') as f:
+            f.write('--- torch custom_debug_node (input) ---\n')
+            f.write(f"[Shape]: {input.shape} , dtype: {type(input)}\n")
+            # Only keep the first 100 data
+            max_elements = min(100, len(flat_input))
+            f.write(' '.join(f'{x:.2f}' for x in flat_input[:max_elements]) + '\n')
+            if len(flat_input) > 100:
+                f.write(f'... (truncated, total {len(flat_input)} elements)\n')
+            f.write('\n')
+        return input
+    
+    @staticmethod
+    def symbolic(g, input):
+        return g.op("CustomDebugNode", input, outputs=1)

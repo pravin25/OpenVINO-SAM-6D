@@ -36,6 +36,7 @@ if False:
     # Workaround for type hints without depending on the `typing` module
     from typing import *
 
+DEBUG_FLAG = False # True
 
 class RandomDropout(nn.Module):
     def __init__(self, p=0.5, inplace=False):
@@ -357,6 +358,11 @@ class QueryAndGroup(nn.Module):
             (B, 3 + C, npoint, nsample) tensor
         """
         idx = ball_query(self.radius, self.nsample, xyz, new_xyz)
+        if DEBUG_FLAG:
+            flat_idx = idx.cpu().numpy().reshape(-1)
+            with open('output/torch_ball_query.txt', 'a') as f:
+                f.write('--- ball_query ---\n')
+                f.write(' '.join(f'{x:.6f}' for x in flat_idx) + '\n')
 
         if self.sample_uniformly:
             unique_cnt = torch.zeros((idx.shape[0], idx.shape[1]))
@@ -372,12 +378,24 @@ class QueryAndGroup(nn.Module):
 
         xyz_trans = xyz.transpose(1, 2).contiguous()
         grouped_xyz = grouping_operation(xyz_trans, idx)  # (B, 3, npoint, nsample)
+        if DEBUG_FLAG:
+            flat_grouped_xyz = grouped_xyz.cpu().numpy().reshape(-1)
+            with open('output/torch_grouping_operation.txt', 'a') as f:
+                f.write('--- grouping_operation (flat_grouped_xyz) ---\n')
+                f.write(' '.join(f'{x:.6f}' for x in flat_grouped_xyz) + '\n')
+
         grouped_xyz -= new_xyz.transpose(1, 2).unsqueeze(-1)
         if self.normalize_xyz:
             grouped_xyz /= self.radius
 
         if features is not None:
             grouped_features = grouping_operation(features, idx)
+            if DEBUG_FLAG:
+                flat_grouped_features = grouped_features.cpu().numpy().reshape(-1)
+                with open('output/torch_grouping_operation.txt', 'a') as f:
+                    f.write('--- grouping_operation (flat_grouped_features) ---\n')
+                    f.write(' '.join(f'{x:.6f}' for x in flat_grouped_features) + '\n')
+
             if self.use_xyz:
                 new_features = torch.cat(
                     [grouped_xyz, grouped_features], dim=1
