@@ -11,6 +11,8 @@
 #include "grouping_operation.hpp"
 #include "custom_svd.hpp"
 #include "custom_det.hpp"
+#include "custom_searchsorted.hpp"
+#include "custom_debug_node.hpp"
 
 // clang-format off
 //! [ov_extension:entry_point]
@@ -44,6 +46,12 @@ OPENVINO_CREATE_EXTENSIONS(
 
         std::make_shared<ov::OpExtension<TemplateExtension::CustomDet>>(),
         std::make_shared<ov::frontend::OpExtension<TemplateExtension::CustomDet>>(),
+
+        std::make_shared<ov::OpExtension<TemplateExtension::CustomSearchSorted>>(),
+        std::make_shared<ov::frontend::OpExtension<TemplateExtension::CustomSearchSorted>>(),
+
+        std::make_shared<ov::OpExtension<TemplateExtension::CustomDebugNode>>(),
+        std::make_shared<ov::frontend::OpExtension<TemplateExtension::CustomDebugNode>>(),
     }));
 //! [ov_extension:entry_point]
 // clang-format on
