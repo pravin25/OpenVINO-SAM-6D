@@ -7,11 +7,18 @@ import os.path as osp
 import numpy as np
 import random
 import importlib
+import time
 import json
+import cv2
 
 import torch
 import torchvision.transforms as transforms
-import cv2
+
+from utils.data_utils import load_im, get_bbox, get_point_cloud_from_depth, get_resize_rgb_choose
+from utils.draw_utils import draw_detections
+
+import pycocotools.mask as cocomask
+import trimesh
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.join(BASE_DIR, '..', 'Pose_Estimation_Model')
@@ -22,29 +29,13 @@ sys.path.append(os.path.join(BASE_DIR, 'model', 'pointnet2'))
 
 
 def get_parser():
-    parser = argparse.ArgumentParser(
-        description="Pose Estimation (CPU Version)")
+    parser = argparse.ArgumentParser(description="[PyTorch] Pose Estimation (CUDA/CPU Version)")
     # pem
-    parser.add_argument("--device",
-                        type=str,
-                        default="cpu",
-                        help="device to run inference on (cpu/cuda)")
-    parser.add_argument("--model",
-                        type=str,
-                        default="pose_estimation_model",
-                        help="path to model file")
-    parser.add_argument("--config",
-                        type=str,
-                        default="config/base.yaml",
-                        help="path to config file, different config.yaml use different config")
-    parser.add_argument("--iter",
-                        type=int,
-                        default=600000,
-                        help="epoch num. for testing")
-    parser.add_argument("--exp_id",
-                        type=int,
-                        default=0,
-                        help="")
+    parser.add_argument("--device", type=str, default="cpu", help="device to run on (cpu/cuda)")
+    parser.add_argument("--model" , type=str, default="pose_estimation_model", help="path to model file")
+    parser.add_argument("--config", type=str, default="config/base.yaml", help="path to config file, different config.yaml use different config")
+    parser.add_argument("--iter"  , type=int, default=600000, help="epoch num. for testing")
+    parser.add_argument("--exp_id", type=int, default=0, help="")
     
     # Set default input parameter, reference demo.sh
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
@@ -93,20 +84,9 @@ def init():
         print("CUDA is not available, switch to CPU")
         cfg.device = "cpu"
     
-    print(f"Using device: {cfg.device}")
+    print(f"[PyTorch] Using device: {cfg.device}")
 
     return cfg
-
-from data_utils import (
-    load_im,
-    get_bbox,
-    get_point_cloud_from_depth,
-    get_resize_rgb_choose,
-)
-from draw_utils import draw_detections
-
-import pycocotools.mask as cocomask
-import trimesh
 
 rgb_transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -332,10 +312,10 @@ if __name__ == "__main__":
 
     # set device
     device = torch.device(cfg.device)
-    print(f"Using device: {device}")
+    print(f"[PyTorch] Using device: {device}")
 
-    # model
-    print("=> creating model ...")
+    # pytorch load model
+    print("[PyTorch] creating model ...")
     MODEL = importlib.import_module(cfg.model_name)
     model = MODEL.Net(cfg.model)
     model = model.to(device)
@@ -345,20 +325,28 @@ if __name__ == "__main__":
     # load checkpoint with map_location
     gorilla.solver.load_checkpoint(model=model, filename=checkpoint, map_location=device)
 
-    print("=> extracting templates ...")
+    print("[PyTorch] extracting templates ...")
     tem_path = os.path.join(cfg.output_dir, 'templates')
     all_tem, all_tem_pts, all_tem_choose = get_templates(tem_path, cfg.test_dataset, device)
+
+    # pytorch feature extraction inference
+    time_start = time.time()
     with torch.no_grad():
         all_tem_pts, all_tem_feat = model.feature_extraction.get_obj_feats(all_tem, all_tem_pts, all_tem_choose)
+    fe_time = time.time() - time_start
+    print(f"[PyTorch] feature extraction inference time: {fe_time*1000:.2f} ms")
 
-    print("=> loading input data ...")
+    # pytorch load input data
+    print("[PyTorch] loading input data ...")
     input_data, img, whole_pts, model_points, detections = get_test_data(
         cfg.rgb_path, cfg.depth_path, cfg.cam_path, cfg.cad_path, cfg.seg_path, 
         cfg.det_score_thresh, cfg.test_dataset, device
     )
     ninstance = input_data['pts'].size(0)
     
-    print("=> running model ...")
+    # pytorch pose estimation inference
+    print("[PyTorch] running model ...")
+    pem_time_start = time.time()
     with torch.no_grad():
         input_data['dense_po'] = all_tem_pts.repeat(ninstance,1,1)
         input_data['dense_fo'] = all_tem_feat.repeat(ninstance,1,1)
@@ -371,7 +359,10 @@ if __name__ == "__main__":
         pred_t = pred_t.detach().cpu().numpy()
         pred_pose_score = pred_pose_score.detach().cpu().numpy()
         # out = model(input_data)
+    pem_time = time.time() - pem_time_start
+    print(f"[PyTorch] pose estimation inference time: {pem_time*1000:.2f} ms")
 
+    # pytorch save results
     if 'pred_pose_score' in input_data.keys():
         pose_scores = pred_pose_score * input_data['score']
     else:
@@ -380,20 +371,21 @@ if __name__ == "__main__":
     pred_rot = pred_R
     pred_trans = pred_t * 1000
 
-    print("=> saving results ...")
+    print("[PyTorch] visualizating ...")
     os.makedirs(f"{cfg.output_dir}/sam6d_results", exist_ok=True)
     for idx, det in enumerate(detections):
         detections[idx]['score'] = float(pose_scores[idx])
         detections[idx]['R'] = list(pred_rot[idx].tolist())
         detections[idx]['t'] = list(pred_trans[idx].tolist())
 
-    with open(os.path.join(f"{cfg.output_dir}/sam6d_results", 'detection_pem_cpu.json'), "w") as f:
+    with open(os.path.join(f"{cfg.output_dir}/sam6d_results", f'detection_pem_{cfg.device}.json'), "w") as f:
         json.dump(detections, f)
 
-    print("=> visualizating ...")
+    print("[PyTorch] visualizating ...")
     save_path = os.path.join(f"{cfg.output_dir}/sam6d_results", f'vis_pem_{cfg.device}.png')
     valid_masks = pose_scores == pose_scores.max()
     K = input_data['K'].detach().cpu().numpy()[valid_masks]
     vis_img = visualize(img, pred_rot[valid_masks], pred_trans[valid_masks], model_points*1000, K, save_path)
     vis_img.save(save_path)
     print(f"[Torch Inference Done] Pose_Estimation_Model ({cfg.device} Version)") 
+    print(f"[PyTorch] PEM E2E Inference Time: {(fe_time + pem_time):.2f} s")

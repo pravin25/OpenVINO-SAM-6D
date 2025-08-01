@@ -26,7 +26,7 @@ sys.path.append(os.path.join(ROOT_DIR, 'model'))
 sys.path.append(os.path.join(BASE_DIR, 'model', 'pointnet2'))
 
 def get_parser():
-    parser = argparse.ArgumentParser(description="Pose Estimation Model Convert to ONNX and OpenVINO (CPU Version)")
+    parser = argparse.ArgumentParser(description="[OpenVINO] Pose Estimation (CPU Version)")
     # pem
     parser.add_argument("--device", type=str, default="cpu", help="device to run on (cpu/cuda)")
     parser.add_argument("--model" , type=str, default="pose_estimation_model", help="path to model file")
@@ -76,7 +76,7 @@ def init():
     cfg.seg_path = args.seg_path
 
     cfg.det_score_thresh = args.det_score_thresh
-    print(f"Using device: {cfg.device}")
+    print(f"[OpenVINO] Using device: {cfg.device}")
 
     return cfg
 
@@ -315,39 +315,30 @@ def get_test_data_np(rgb_path, depth_path, cam_path, cad_path, seg_path, det_sco
 
 
 def main():
+    # init config
     cfg = init()
-    core = Core()
 
+    # ov init
+    core = Core()
     ov_pem_model_path = "model_save/ov_pem_model_cpu.xml"
     ov_fe_model_path = "model_save/ov_fe_model_cpu.xml"
     ov_extension_lib_path = "./model/ov_pointnet2_op/build/libopenvino_operation_extension.so"
     core.add_extension(ov_extension_lib_path)
 
-
+    # ov load models
     ov_pem_model = core.read_model(ov_pem_model_path)
     ov_fe_model = core.read_model(ov_fe_model_path)
 
     ov_pem_compiled_model = core.compile_model(ov_pem_model, 'CPU')
     ov_fe_compiled_model = core.compile_model(ov_fe_model, 'CPU')
 
-    # set device
-    device = cfg.device
-    print(f"Using device: {device}")
-
-    print("=> extracting templates ...")
+    print("[OpenVINO] extracting templates ...")
     tem_path = os.path.join(cfg.output_dir, 'templates')
-    # all_tem, all_tem_pts, all_tem_choose = get_templates(tem_path, cfg.test_dataset, device)
-    
     all_tem, all_tem_pts, all_tem_choose = get_templates_np(tem_path, cfg.test_dataset)
     
-    # OV feature extraction inference
-    # 拼接RGB张量
+    # concat all templates(rgb, pts, choose)
     tem_rgb_concat = np.concatenate(all_tem, axis=1)  # (B, n_template_view*3, H, W)
-    
-    # 拼接点云张量
     tem_pts_concat = np.concatenate(all_tem_pts, axis=1)  # (B, n_template_view*n_sample_template_point, 3)
-    
-    # 拼接选择索引张量
     tem_choose_concat = np.concatenate(all_tem_choose, axis=1)  # (B, n_template_view*n_sample_template_point)
     
     # prepare OpenVINO input
@@ -356,17 +347,23 @@ def main():
         "pts_input": tem_pts_concat,
         "choose_input": tem_choose_concat
     }
-    
-    # OV inference
+
+    # Warm up
+    feature_results = ov_fe_compiled_model(feature_inputs)
+
+    # OV feature extraction inference
+    time_start = time.time()
     feature_results = ov_fe_compiled_model(feature_inputs)
     results_list = list(feature_results.values())
+    fe_time = time.time() - time_start
+    print(f"[OpenVINO] feature extraction inference time: {fe_time*1000:.2f} ms")
     
     # get output
     all_tem_pts = results_list[0]  # tem_pts_out
     all_tem_feat = results_list[1]  # tem_feat
 
     # OV pose estimation inference
-    print("=> loading input data ...")
+    print("[OpenVINO] loading input data ...")
     input_data, img, whole_pts, model_points, detections = get_test_data_np(
         cfg.rgb_path, cfg.depth_path, cfg.cam_path, cfg.cad_path, cfg.seg_path, 
         cfg.det_score_thresh, cfg.test_dataset
@@ -383,10 +380,17 @@ def main():
             "dense_po": input_data['dense_po'],
             "dense_fo": input_data['dense_fo'],
         }
-    # 推理
-    print("=>[OpenVINO] running model ...")
+
+    # Warm up
     results = ov_pem_compiled_model(ov_pem_inputs)
 
+    # OV pose estimation inference
+    print("[OpenVINO] running model ...")
+    pem_time_start = time.time()
+    results = ov_pem_compiled_model(ov_pem_inputs)
+    pem_time = time.time() - pem_time_start
+    print(f"[OpenVINO] pose estimation inference time: {pem_time*1000:.2f} ms")
+    
     results_output = list(results.values())
     ov_pred_R = results_output[0]
     ov_pred_t = results_output[1]
@@ -397,7 +401,7 @@ def main():
     pred_trans = ov_pred_t * 1000 
 
     # Save results
-    print("=> saving results ...")
+    print("[OpenVINO] saving results ...")
     for idx, det in enumerate(detections):
         detections[idx]['score'] = float(pose_scores[idx])
         detections[idx]['R'] = list(pred_rot[idx].tolist())
@@ -406,13 +410,14 @@ def main():
     with open(os.path.join(f"{cfg.output_dir}/sam6d_results", f'detection_pem_ov_{cfg.device}.json'), "w") as f:
         json.dump(detections, f)
 
-    print("=> visualizating ...")
+    print("[OpenVINO] visualizating ...")
     save_path = os.path.join(f"{cfg.output_dir}/sam6d_results", f'vis_pem_ov_{cfg.device}.png')
     valid_masks = pose_scores == pose_scores.max()
     K = input_data['K'][valid_masks]
     vis_img = visualize(img, pred_rot[valid_masks], pred_trans[valid_masks], model_points*1000, K, save_path)
     vis_img.save(save_path)
     print(f"[OpenVINO Inference Done] Pose_Estimation_Model ({cfg.device} Version)") 
+    print(f"[OpenVINO] PEM E2E Inference Time: {(fe_time + pem_time):.2f} s")    
 
 
 if __name__ == "__main__":
