@@ -88,71 +88,22 @@ def init():
 
     cfg.det_score_thresh = args.det_score_thresh
     
-    # 检查设备可用性
+    # check device availability
     if cfg.device == "cuda" and not torch.cuda.is_available():
-        print("CUDA不可用，自动切换到CPU")
+        print("CUDA is not available, switch to CPU")
         cfg.device = "cpu"
     
-    print(f"使用设备: {cfg.device}")
+    print(f"Using device: {cfg.device}")
 
     return cfg
 
-
-# 尝试导入依赖模块，如果不存在则提供替代实现
-try:
-    from data_utils import (
-        load_im,
-        get_bbox,
-        get_point_cloud_from_depth,
-        get_resize_rgb_choose,
-    )
-    from draw_utils import draw_detections
-except ImportError:
-    print("警告: 无法导入data_utils或draw_utils，使用简化实现")
-    
-    def load_im(path):
-        """加载图像文件"""
-        if path.endswith('.png') or path.endswith('.jpg') or path.endswith('.jpeg'):
-            return cv2.imread(path, cv2.IMREAD_UNCHANGED)
-        else:
-            return np.load(path)
-    
-    def get_bbox(mask):
-        """获取mask的边界框"""
-        rows = np.any(mask, axis=1)
-        cols = np.any(mask, axis=0)
-        y1, y2 = np.where(rows)[0][[0, -1]]
-        x1, x2 = np.where(cols)[0][[0, -1]]
-        return y1, y2, x1, x2
-    
-    def get_point_cloud_from_depth(depth, K):
-        """从深度图生成点云"""
-        h, w = depth.shape
-        fx, fy = K[0, 0], K[1, 1]
-        cx, cy = K[0, 2], K[1, 2]
-        
-        y, x = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
-        x = (x - cx) * depth / fx
-        y = (y - cy) * depth / fy
-        z = depth
-        
-        return np.stack([x, y, z], axis=-1)
-    
-    def get_resize_rgb_choose(choose, bbox, img_size):
-        """获取调整大小后的RGB选择索引"""
-        y1, y2, x1, x2 = bbox
-        h, w = y2 - y1, x2 - x1
-        scale_h, scale_w = img_size / h, img_size / w
-        
-        choose_y = (choose // w).astype(np.float32) * scale_h
-        choose_x = (choose % w).astype(np.float32) * scale_w
-        choose = choose_y * img_size + choose_x
-        return choose.astype(np.int32)
-    
-    def draw_detections(rgb, pred_rot, pred_trans, model_points, K, color=(255, 0, 0)):
-        """绘制检测结果（简化版本）"""
-        # 简化实现，只返回原图
-        return rgb.copy()
+from data_utils import (
+    load_im,
+    get_bbox,
+    get_point_cloud_from_depth,
+    get_resize_rgb_choose,
+)
+from draw_utils import draw_detections
 
 import pycocotools.mask as cocomask
 import trimesh
@@ -379,9 +330,9 @@ if __name__ == "__main__":
     random.seed(cfg.rd_seed)
     torch.manual_seed(cfg.rd_seed)
 
-    # 设置设备
+    # set device
     device = torch.device(cfg.device)
-    print(f"使用设备: {device}")
+    print(f"Using device: {device}")
 
     # model
     print("=> creating model ...")
@@ -391,7 +342,7 @@ if __name__ == "__main__":
     model.eval()
     checkpoint = os.path.join(os.path.dirname((os.path.abspath(__file__))), 'checkpoints', 'sam-6d-pem-base.pth')
     
-    # 加载checkpoint时指定map_location
+    # load checkpoint with map_location
     gorilla.solver.load_checkpoint(model=model, filename=checkpoint, map_location=device)
 
     print("=> extracting templates ...")
@@ -411,15 +362,23 @@ if __name__ == "__main__":
     with torch.no_grad():
         input_data['dense_po'] = all_tem_pts.repeat(ninstance,1,1)
         input_data['dense_fo'] = all_tem_feat.repeat(ninstance,1,1)
-        out = model(input_data)
+        model_input_tuple = (
+            input_data['pts'], input_data['rgb'], input_data['rgb_choose'], 
+            input_data['model'], input_data['dense_po'], input_data['dense_fo']
+        )
+        pred_R, pred_t, pred_pose_score = model(*model_input_tuple)
+        pred_R = pred_R.detach().cpu().numpy()
+        pred_t = pred_t.detach().cpu().numpy()
+        pred_pose_score = pred_pose_score.detach().cpu().numpy()
+        # out = model(input_data)
 
-    if 'pred_pose_score' in out.keys():
-        pose_scores = out['pred_pose_score'] * out['score']
+    if 'pred_pose_score' in input_data.keys():
+        pose_scores = pred_pose_score * input_data['score']
     else:
-        pose_scores = out['score']
+        pose_scores = input_data['score']
     pose_scores = pose_scores.detach().cpu().numpy()
-    pred_rot = out['pred_R'].detach().cpu().numpy()
-    pred_trans = out['pred_t'].detach().cpu().numpy() * 1000
+    pred_rot = pred_R
+    pred_trans = pred_t * 1000
 
     print("=> saving results ...")
     os.makedirs(f"{cfg.output_dir}/sam6d_results", exist_ok=True)
@@ -432,9 +391,9 @@ if __name__ == "__main__":
         json.dump(detections, f)
 
     print("=> visualizating ...")
-    save_path = os.path.join(f"{cfg.output_dir}/sam6d_results", 'vis_pem_cpu.png')
+    save_path = os.path.join(f"{cfg.output_dir}/sam6d_results", f'vis_pem_{cfg.device}.png')
     valid_masks = pose_scores == pose_scores.max()
     K = input_data['K'].detach().cpu().numpy()[valid_masks]
     vis_img = visualize(img, pred_rot[valid_masks], pred_trans[valid_masks], model_points*1000, K, save_path)
     vis_img.save(save_path)
-    print("[Inference Done] Pose_Estimation_Model (CPU Version)") 
+    print(f"[Torch Inference Done] Pose_Estimation_Model ({cfg.device} Version)") 
