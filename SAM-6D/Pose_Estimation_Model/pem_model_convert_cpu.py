@@ -95,32 +95,6 @@ rgb_transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                                     std=[0.229, 0.224, 0.225])])
 
-def visualize(rgb, pred_rot, pred_trans, model_points, K, save_path):
-    """
-    Visualize the predicted pose by drawing the 3D model overlay on the RGB image.
-    Args:
-        rgb: np.ndarray, shape (H, W, 3), uint8, input RGB image
-        pred_rot: np.ndarray, shape (N, 3, 3), predicted rotation matrices
-        pred_trans: np.ndarray, shape (N, 3), predicted translations (mm)
-        model_points: np.ndarray, shape (M, 3), 3D model points (mm)
-        K: np.ndarray, shape (N, 3, 3), camera intrinsics
-        save_path: str, path to save the visualization image
-    Returns:
-        concat: PIL.Image, side-by-side visualization image
-    """
-    img = draw_detections(rgb, pred_rot, pred_trans, model_points, K, color=(255, 0, 0))
-    img = Image.fromarray(np.uint8(img))
-    img.save(save_path)
-    prediction = Image.open(save_path)
-    
-    # concat side by side in PIL
-    rgb = Image.fromarray(np.uint8(rgb))
-    img = np.array(img)
-    concat = Image.new('RGB', (img.shape[1] + prediction.size[0], img.shape[0]))
-    concat.paste(rgb, (0, 0))
-    concat.paste(prediction, (img.shape[1], 0))
-    return concat
-
 
 def _get_template(path, cfg, device, tem_index=1):
     """
