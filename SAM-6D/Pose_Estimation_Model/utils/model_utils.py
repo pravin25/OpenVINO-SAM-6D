@@ -241,19 +241,19 @@ def compute_coarse_Rt(
     # idx = torch.searchsorted(cumsum_weights, torch.rand(B, n_proposal1*3, device=device))  #Exporting the operator 'aten::searchsorted' to ONNX opset version 20 is not supported
     # Replace torch.searchsorted with ONNX compatible implementation
 
-    # idx = CustomSearchSorted.apply(cumsum_weights, torch.rand(B, n_proposal1*3, device=device))
-    # if DEBUG_FLAG:
-    #     flat_idx = idx.cpu().detach().numpy().reshape(-1)
-    #     with open('output/torch_search_sorted.txt', 'a') as f:
-    #         f.write('--- torch CustomSearchSorted ---\n')
-    #         f.write(' '.join(f'{x:.2f}' for x in flat_idx) + '\n')
-    
-    idx = weighted_sampling_onnx_compatible(cumsum_weights, B, n_proposal1*3, device)
+    idx = CustomSearchSorted.apply(cumsum_weights, torch.rand(B, n_proposal1*3, device=device))
     if DEBUG_FLAG:
         flat_idx = idx.cpu().detach().numpy().reshape(-1)
         with open('output/torch_search_sorted.txt', 'a') as f:
-            f.write('--- torch CustomSearchSorted onnx compatible ---\n')
-            f.write(' '.join(f'{x:.6f}' for x in flat_idx) + '\n')
+            f.write('--- torch CustomSearchSorted ---\n')
+            f.write(' '.join(f'{x:.2f}' for x in flat_idx) + '\n')
+    
+    # idx = weighted_sampling_onnx_compatible(cumsum_weights, B, n_proposal1*3, device)
+    # if DEBUG_FLAG:
+    #     flat_idx = idx.cpu().detach().numpy().reshape(-1)
+    #     with open('output/torch_search_sorted.txt', 'a') as f:
+    #         f.write('--- torch CustomSearchSorted onnx compatible ---\n')
+    #         f.write(' '.join(f'{x:.6f}' for x in flat_idx) + '\n')
 
     idx1, idx2 = idx.div(N2, rounding_mode='floor'), idx % N2
     idx1 = torch.clamp(idx1, max=N1-1).unsqueeze(2).repeat(1,1,3)
@@ -286,6 +286,7 @@ def compute_coarse_Rt(
 
 def weighted_sampling_onnx_compatible(cumsum_weights, batch_size, num_samples, device):
     """
+    [Not used] This will cause huge memory overhead, is not a good implementation method, and is not conducive to cuda infer
     ONNX compatible weighted sampling implementation, replacing torch.searchsorted
     
     Args:
