@@ -319,6 +319,15 @@ def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_
 
 
 if __name__ == "__main__":
+    print("================================================")
+    print("""Due to a PEM model struction refactor, this script no longer works. 
+            Please use run_inference_custom_pytorch.py for PyTorch CPU/CUDA inference.
+            
+            Currently this version only supports model inference, not model training. 
+            If you need to retrain a model, pls use the original SAM6D repository.
+            This script will be removed in the future.""")
+    print("================================================")
+    
     cfg = init()
 
     random.seed(cfg.rd_seed)
