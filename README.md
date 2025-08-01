@@ -12,12 +12,17 @@
 ## News
 - [2024/03/07] We publish an updated version of our paper on [ArXiv](https://arxiv.org/abs/2311.15707).
 - [2024/02/29] Our paper is accepted by CVPR2024!
+- [2025/08/01] OpenVINO enable SAM6D PEM model on Intel CPU [by Kunda].
 
+## To Do List
+- [OpenVINO] SAM6D PEM model enable on Intel GPU 
+- [OpenVINO] SAM6D ISM model enable
 
 ## Update Log
 - [2024/03/05] We update the demo to support [FastSAM](https://github.com/CASIA-IVA-Lab/FastSAM), you can do this by specifying `SEGMENTOR_MODEL=fastsam` in demo.sh.
 - [2024/03/03] We upload a [docker image](https://hub.docker.com/r/lihualiu/sam-6d/tags) for running custom data.
 - [2024/03/01] We update the released [model](https://drive.google.com/file/d/1joW9IvwsaRJYxoUmGo68dBVg-HcFNyI7/view?usp=sharing) of PEM. For the new model, a larger batchsize of 32 is set, while that of the old is 12. 
+- [2025/08/01] Implement SAM6D onnx / openvino IR model convert, and implement the OpenVINO SAM6D PEM pipeline  [by Kunda]. 
 
 ## Overview
 In this work, we employ Segment Anything Model as an advanced starting point for **zero-shot 6D object pose estimation** from RGB-D images, and propose a novel framework, named **SAM-6D**, which utilizes the following two dedicated sub-networks to realize the focused task:
@@ -59,6 +64,48 @@ cd SAM-6D
 sh demo.sh
 ```
 
+### 3. (Optinal) OpenVINO enable SAM6D PEM on Intel CPU
+Download OpenVINO packages from [OpenVINO Archives](https://storage.openvinotoolkit.org/repositories/openvino/packages/2025.2/linux)
+
+#### step 1. OpenVINO install 
+```
+wget https://storage.openvinotoolkit.org/repositories/openvino/packages/2025.2/linux/openvino_toolkit_ubuntu22_2025.2.0.19140.c01cd93e24d_x86_64.tgz
+tar -zxvf openvino_toolkit_ubuntu22_2025.2.0.19140.c01cd93e24d_x86_64.tgz
+
+# Setup ov environment variables
+source openvino_toolkit_ubuntu22_2025.2.0.19140.c01cd93e24d_x86_64/setupvars.sh
+```
+
+#### step 2. OpenVINO PEM model convert
+OpenVINO custom op need to be compiled by source code, make sure the ov environment variables has already setup.
+```
+cd <SAM6D_DIR>/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/
+
+mkdir build && cd build
+
+cmake .. && make -j
+
+cd <SAM6D_DIR>/SAM-6D/Pose_Estimation_Model
+
+ python pem_model_convert_cpu.py
+
+```
+
+#### step 3. OpenVINO PEM model inference on CPU
+```
+python run_inference_custom_openvino_cpu.py
+
+# to compare result with pytorch model
+
+python run_inference_custom_pytorch.py 
+```
+Due to a PEM model struction refactor, the PEM inference script [run_inference_custom_pytorch.py](./SAM-6D/Pose_Estimation_Model/run_inference_custom_pytorch.py) in this branch no longer works. 
+
+Please use run_inference_custom_pytorch.py for PyTorch CPU/CUDA inference.
+            
+Currently the refactor PEM model only supports model inference, not model training. 
+If you need to retrain a model, pls use the original [SAM6D repository](https://github.com/JiehongLin/SAM-6D/tree/main).
+This script will be removed in the future.
 
 
 ## Citation
@@ -84,3 +131,4 @@ Dekun Lu: [derkunlu@gmail.com](mailto:derkunlu@gmail.com)
 
 Kui Jia:  [kuijia@gmail.com](kuijia@gmail.com)
 
+Kunda Xu: [752038@gmail.com](752038@gmail.com) [Only for OpenVINO Optimization and Enable]
