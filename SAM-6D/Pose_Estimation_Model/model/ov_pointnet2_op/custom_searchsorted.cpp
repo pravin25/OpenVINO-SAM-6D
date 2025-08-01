@@ -17,25 +17,25 @@ CustomSearchSorted::CustomSearchSorted(const ov::Output<ov::Node>& cumsum_weight
 
 //! [op:validate]
 void CustomSearchSorted::validate_and_infer_types() {
-    // 输入1: cumsum_weights shape: (batch_size, N)
+    // Input 1: cumsum_weights shape: (batch_size, N)
     const auto& cumsum_input = input(0);
     auto cumsum_shape = cumsum_input.get_partial_shape();
     auto elem_type = get_input_element_type(0);
     
-    // 输入2: random_values shape: (batch_size, num_samples)
+    // Input 2: random_values shape: (batch_size, num_samples)
     const auto& random_input = input(1);
     auto random_shape = random_input.get_partial_shape();
     
-    // 验证输入
+    // Validate inputs
     if (cumsum_shape.rank().is_static() && cumsum_shape.rank().get_length() == 2) {
         if (random_shape.rank().is_static() && random_shape.rank().get_length() == 2) {
-            // 检查batch_size是否匹配
+            // Check if batch_size matches
             if (cumsum_shape[0].is_static() && random_shape[0].is_static()) {
                 if (cumsum_shape[0] != random_shape[0]) {
                     throw std::runtime_error("Batch sizes must match between cumsum_weights and random_values");
                 }
             }
-            // 输出shape: (batch_size, num_samples)
+            // Output shape: (batch_size, num_samples)
             set_output_type(0, ov::element::i64, ov::PartialShape{random_shape[0], random_shape[1]});
         } else {
             throw std::runtime_error("random_values must be a 2D tensor of shape (batch_size, num_samples)");
@@ -85,14 +85,14 @@ bool CustomSearchSorted::evaluate(ov::TensorVector& outputs, const ov::TensorVec
     out.set_shape({batch_size, num_samples});
     int64_t* out_data = out.data<int64_t>();
     
-    // 实现searchsorted算法
+    // Implement searchsorted algorithm
     for (size_t b = 0; b < batch_size; ++b) {
         const float* batch_cumsum = cumsum_data + b * N;
         
         for (size_t s = 0; s < num_samples; ++s) {
             float random_val = random_data[b * num_samples + s];
             
-            // 二分搜索找到第一个cumsum_weights >= random_values的位置
+            // Binary search to find the position of the first cumsum_weights >= random_values
             int64_t left = 0;
             int64_t right = N;
             
@@ -118,7 +118,7 @@ bool CustomSearchSorted::evaluate(ov::TensorVector& outputs, const ov::TensorVec
         // }
         std::cout << std::endl;
         
-        // 添加输入数据调试信息
+        // Add input data debugging information
         std::cout << "[CustomSearchSorted Debug] Input shapes: cumsum(" << batch_size << "," << N << "), random(" << batch_size << "," << num_samples << ")" << std::endl;
         std::cout << "[CustomSearchSorted Debug] First batch cumsum values: ";
         for (size_t i = 0; i < std::min(size_t(10), N); ++i) {
@@ -131,7 +131,7 @@ bool CustomSearchSorted::evaluate(ov::TensorVector& outputs, const ov::TensorVec
         }
         std::cout << std::endl;
         
-        // 保存到文件，便于和PyTorch对比
+        // Save to file, for comparison with PyTorch
         FILE* fp = fopen("output/ov_searchsorted.txt", "a");
         if (fp) {
             fprintf(fp, "----- OV CustomSearchSorteds -----\n");
