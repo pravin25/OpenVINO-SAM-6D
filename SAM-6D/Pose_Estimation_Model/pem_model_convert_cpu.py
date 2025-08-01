@@ -8,15 +8,22 @@ import numpy as np
 import random
 import importlib
 import json
-
-import torch
-import torchvision.transforms as transforms
 import cv2
 
+import torch
 import torch.nn as nn
-import os
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import torchvision.transforms as transforms
 
+import openvino as ov
+from openvino import Core
+
+import pycocotools.mask as cocomask
+import trimesh
+
+from utils.data_utils import load_im, get_bbox, get_point_cloud_from_depth, get_resize_rgb_choose
+from utils.draw_utils import draw_detections
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.join(BASE_DIR, '..', 'Pose_Estimation_Model')
 sys.path.append(os.path.join(ROOT_DIR, 'provider'))
@@ -24,31 +31,14 @@ sys.path.append(os.path.join(ROOT_DIR, 'utils'))
 sys.path.append(os.path.join(ROOT_DIR, 'model'))
 sys.path.append(os.path.join(BASE_DIR, 'model', 'pointnet2'))
 
-
 def get_parser():
-    parser = argparse.ArgumentParser(
-        description="Pose Estimation Model Convert (CPU Version)")
+    parser = argparse.ArgumentParser(description="Pose Estimation Model Convert to ONNX and OpenVINO (CPU Version)")
     # pem
-    parser.add_argument("--device",
-                        type=str,
-                        default="cpu",
-                        help="device to run on (cpu/cuda)")
-    parser.add_argument("--model",
-                        type=str,
-                        default="pose_estimation_model",
-                        help="path to model file")
-    parser.add_argument("--config",
-                        type=str,
-                        default="config/base.yaml",
-                        help="path to config file, different config.yaml use different config")
-    parser.add_argument("--iter",
-                        type=int,
-                        default=600000,
-                        help="epoch num. for testing")
-    parser.add_argument("--exp_id",
-                        type=int,
-                        default=0,
-                        help="")
+    parser.add_argument("--device", type=str, default="cpu", help="device to run on (cpu/cuda)")
+    parser.add_argument("--model" , type=str, default="pose_estimation_model", help="path to model file")
+    parser.add_argument("--config", type=str, default="config/base.yaml", help="path to config file, different config.yaml use different config")
+    parser.add_argument("--iter"  , type=int, default=600000, help="epoch num. for testing")
+    parser.add_argument("--exp_id", type=int, default=0, help="")
     
     # Set default input parameter, reference demo.sh
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
@@ -70,6 +60,7 @@ def get_parser():
 
     return args_cfg
 
+# Config Init
 def init():
     args = get_parser()
     exp_name = args.model + '_' + \
@@ -92,74 +83,13 @@ def init():
 
     cfg.det_score_thresh = args.det_score_thresh
     
-    # 检查设备可用性
     if cfg.device == "cuda" and not torch.cuda.is_available():
-        print("CUDA不可用，自动切换到CPU")
+        print("CUDA is not available, automatically switch to CPU")
         cfg.device = "cpu"
     
-    print(f"使用设备: {cfg.device}")
+    print(f"Using device: {cfg.device}")
 
     return cfg
-
-
-# 尝试导入依赖模块，如果不存在则提供替代实现
-try:
-    from data_utils import (
-        load_im,
-        get_bbox,
-        get_point_cloud_from_depth,
-        get_resize_rgb_choose,
-    )
-    from draw_utils import draw_detections
-except ImportError:
-    print("警告: 无法导入data_utils或draw_utils，使用简化实现")
-    
-    def load_im(path):
-        """加载图像文件"""
-        if path.endswith('.png') or path.endswith('.jpg') or path.endswith('.jpeg'):
-            return cv2.imread(path, cv2.IMREAD_UNCHANGED)
-        else:
-            return np.load(path)
-    
-    def get_bbox(mask):
-        """获取mask的边界框"""
-        rows = np.any(mask, axis=1)
-        cols = np.any(mask, axis=0)
-        y1, y2 = np.where(rows)[0][[0, -1]]
-        x1, x2 = np.where(cols)[0][[0, -1]]
-        return y1, y2, x1, x2
-    
-    def get_point_cloud_from_depth(depth, K):
-        """从深度图生成点云"""
-        h, w = depth.shape
-        fx, fy = K[0, 0], K[1, 1]
-        cx, cy = K[0, 2], K[1, 2]
-        
-        y, x = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
-        x = (x - cx) * depth / fx
-        y = (y - cy) * depth / fy
-        z = depth
-        
-        return np.stack([x, y, z], axis=-1)
-    
-    def get_resize_rgb_choose(choose, bbox, img_size):
-        """获取调整大小后的RGB选择索引"""
-        y1, y2, x1, x2 = bbox
-        h, w = y2 - y1, x2 - x1
-        scale_h, scale_w = img_size / h, img_size / w
-        
-        choose_y = (choose // w).astype(np.float32) * scale_h
-        choose_x = (choose % w).astype(np.float32) * scale_w
-        choose = choose_y * img_size + choose_x
-        return choose.astype(np.int32)
-    
-    def draw_detections(rgb, pred_rot, pred_trans, model_points, K, color=(255, 0, 0)):
-        """绘制检测结果（简化版本）"""
-        # 简化实现，只返回原图
-        return rgb.copy()
-
-import pycocotools.mask as cocomask
-import trimesh
 
 rgb_transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -376,112 +306,241 @@ def get_test_data(rgb_path, depth_path, cam_path, cad_path, seg_path, det_score_
     ret_dict['K'] = torch.FloatTensor(K).unsqueeze(0).repeat(ninstance, 1, 1).to(device)
     return ret_dict, whole_image, whole_pts.reshape(-1, 3), model_points, all_dets
 
+def create_dummy_templates(cfg, device, batch_size=1):
+    # create dummy templates for onnx export
+    # [ToDo] If using orginial data for fe_wrapper export, failed due to : 
+    # [ONNX] feature extraction submodel export failed: too many indices for tensor of dimension 2
+    n_template_view = cfg.test_dataset.n_template_view
+    img_size = cfg.test_dataset.img_size
+    n_sample_template_point = cfg.test_dataset.n_sample_template_point
+    
+    tem_rgb_concat = torch.randn(batch_size, n_template_view * 3, img_size, img_size, device=device)
+    tem_pts_concat = torch.randn(batch_size, n_template_view * n_sample_template_point, 3, device=device)
+    tem_choose_concat = torch.randint(0, img_size*img_size, (batch_size, n_template_view * n_sample_template_point), device=device)
+    
+    return tem_rgb_concat, tem_pts_concat, tem_choose_concat
 
-class PEMWrapperModel(nn.Module):
-    def __init__(self, model):
+def prepare_data(cfg, model, device):
+    print("[Pytorch] extracting templates ...")
+    tem_path = os.path.join(cfg.output_dir, 'templates')
+    all_tem, all_tem_pts, all_tem_choose = get_templates(tem_path, cfg.test_dataset, device)
+    with torch.no_grad():
+        all_tem_pts, all_tem_feat = model.feature_extraction.get_obj_feats(all_tem, all_tem_pts, all_tem_choose)
+
+    print("[Pytorch] loading input data ...")
+    input_data, img, whole_pts, model_points, detections = get_test_data(
+        cfg.rgb_path, cfg.depth_path, cfg.cam_path, cfg.cad_path, cfg.seg_path, 
+        cfg.det_score_thresh, cfg.test_dataset, device
+    )
+    # print(f"[Pytorch] input_data.keys: {input_data.keys()}")
+    ninstance = input_data['pts'].size(0)
+
+    #pytorch infer verification
+    print("[Pytorch] running model ...")
+    with torch.no_grad():
+        input_data['dense_po'] = all_tem_pts.repeat(ninstance,1,1)
+        input_data['dense_fo'] = all_tem_feat.repeat(ninstance,1,1)
+
+    print("[Pytorch] model inference success")
+
+    print("[Pytorch] prepare data for model convert...")
+    onnx_pem_input_name = ["pts", "rgb", "rgb_choose", "model", "dense_po", "dense_fo"]
+    onnx_pem_output_name = ["pred_R", "pred_t", "pred_pose_score"]
+    onnx_pem_input = (input_data['pts'], input_data['rgb'], input_data['rgb_choose'], 
+                      input_data['model'], input_data['dense_po'], input_data['dense_fo'])
+
+    rgb_input, pts_input, choose_input = create_dummy_templates(cfg, device)
+    onnx_fe_input_name = ["rgb_input", "pts_input", "choose_input"]
+    onnx_fe_output_name = ["pts_output", "feat_output"]
+    onnx_fe_input = (rgb_input, pts_input, choose_input)
+
+    batch_size = -1
+    ov_pem_input_name = {"pts":[batch_size,2048,3], 
+                        "rgb":[batch_size,3,224,224], 
+                        "rgb_choose":[batch_size,2048], 
+                        "model":[batch_size,1024,3], 
+                        "dense_po":[batch_size,2048,3], 
+                        "dense_fo":[batch_size,2048,256]}
+    ov_pem_output_name = {"pred_R":[batch_size,3,3], 
+                          "pred_t":[batch_size,3], 
+                          "pred_pose_score":[batch_size]}
+    ov_pem_input = {
+        "pts": input_data['pts'],
+        "rgb": input_data['rgb'],
+        "rgb_choose": input_data['rgb_choose'],
+        "model": input_data['model'],
+        "dense_po": input_data['dense_po'],
+        "dense_fo": input_data['dense_fo'],
+    }
+
+    ov_fe_input_name = {"rgb_input":[batch_size,3,224,224], 
+                                        "pts_input":[batch_size,2048,3], 
+                                        "choose_input":[batch_size,2048]}
+    ov_fe_output_name = {"pts_output":[batch_size,2048,3], 
+                                        "feat_output":[batch_size,2048,256]}
+    ov_fe_input = {
+        "rgb_input": rgb_input,
+        "pts_input": pts_input,
+        "choose_input": choose_input,
+    }
+
+    return (onnx_pem_input_name, onnx_pem_output_name, onnx_pem_input,
+            onnx_fe_input_name, onnx_fe_output_name, onnx_fe_input,
+            ov_pem_input_name, ov_pem_output_name, ov_pem_input,
+            ov_fe_input_name, ov_fe_output_name, ov_fe_input)
+
+class FeatureExtractionWrapper(nn.Module):
+    """feature_extraction get_obj_feats wrapper for onnx export"""
+    def __init__(self, feature_extraction):
         super().__init__()
-        self.model = model
-        self.input_keys = [
-            'pts', 'rgb', 'rgb_choose', 'score', 'model', 'K',
-            'dense_po', 'dense_fo'
-        ]
-        self.output_key = 'pred_t'
+        self.feature_extraction = feature_extraction
+    
+    def forward(self, rgb_input, pts_input, choose_input):
+        """
+        export get_obj_feats method
+        input: concatenated tensors
+        rgb_input: (B, n_template_view*3, H, W)
+        pts_input: (B, n_template_view*n_sample_template_point, 3)
+        choose_input: (B, n_template_view*n_sample_template_point)
+        """
+        # debug info
+        print(f"FeatureExtractionWrapper输入形状: rgb_input={rgb_input.shape}, pts_input={pts_input.shape}, choose_input={choose_input.shape}")
+        
+        # split concatenated tensors
+        n_template_view = 42  # from config
+        n_sample_template_point = pts_input.size(1) // n_template_view
+        
+        print(f"split parameters: n_template_view={n_template_view}, n_sample_template_point={n_sample_template_point}")
+        
+        # split rgb tensor
+        tem_rgb_list = []
+        for i in range(n_template_view):
+            start_idx = i * 3
+            end_idx = (i + 1) * 3
+            tem_rgb_list.append(rgb_input[:, start_idx:end_idx, :, :])
+        
+        # split pts tensor
+        tem_pts_list = []
+        for i in range(n_template_view):
+            start_idx = i * n_sample_template_point
+            end_idx = (i + 1) * n_sample_template_point
+            tem_pts_list.append(pts_input[:, start_idx:end_idx, :])
+        
+        # split choose tensor
+        tem_choose_list = []
+        for i in range(n_template_view):
+            start_idx = i * n_sample_template_point
+            end_idx = (i + 1) * n_sample_template_point
+            tem_choose_list.append(choose_input[:, start_idx:end_idx])
+        
+        # call original method
+        return self.feature_extraction.get_obj_feats(tem_rgb_list, tem_pts_list, tem_choose_list)
 
-    def forward(self, pts, rgb, rgb_choose, score, model_pts, K,
-                dense_po, dense_fo):
-        # 适配重构后的Net，直接参数传递
-        return self.model(pts, rgb, rgb_choose, score, model_pts, K, dense_po, dense_fo)
+def onnx_model_convert_feature_extraction_submodel(model, onnx_fe_input_name, onnx_fe_output_name, onnx_fe_input, onnx_model_path):
+    feature_wrapper = FeatureExtractionWrapper(model.feature_extraction)
+    try:
+        with torch.no_grad():
+            torch.onnx.export(
+                feature_wrapper,
+                onnx_fe_input,
+                onnx_model_path,
+                opset_version=20,
+                operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
+                input_names=onnx_fe_input_name,
+                output_names=onnx_fe_output_name,
+                dynamic_axes={k: {0: "batch"} for k in onnx_fe_input_name},
+                do_constant_folding=False,
+                verbose=False,  # True , for detailed output
+                export_params=True,
+                keep_initializers_as_inputs=False
+            )
+        print(f"[ONNX] feature extraction submodel export success: {onnx_model_path}")
+        
+    except Exception as e:
+        print(f"[ONNX] feature extraction submodel export failed: {e}")
+
+def onnx_model_convert_pose_estimation_submodel(model, onnx_pem_input_name, onnx_pem_output_name, onnx_pem_input, onnx_model_path):
+    try:
+        torch.onnx.export(
+            model,
+            onnx_pem_input,
+            onnx_model_path,
+            opset_version=20,
+            operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
+            input_names=onnx_pem_input_name,
+            output_names=onnx_pem_output_name,
+            dynamic_axes={k: {0: "batch"} for k in onnx_pem_input_name},
+            do_constant_folding=False,
+            verbose=False,
+            export_params=True,
+            keep_initializers_as_inputs=False
+        )
+        print(f"[ONNX] PEM onnx model export success: {onnx_model_path}")
+            
+    except Exception as e:
+        print(f"[ONNX] export failed : {e}")
 
 
-if __name__ == "__main__":
+def openvino_model_convert_feature_extraction_submodel(core, ov_fe_input_name, ov_fe_output_name, ov_fe_input, onnx_fe_model_path, ov_fe_model_path):
+    ov_fe_model = core.read_model(onnx_fe_model_path)
+    compiled_model = core.compile_model(ov_fe_model, 'CPU')
+    ov.save_model(ov_fe_model, ov_fe_model_path)
+    print(f"[OpenVINO] feature extraction submodel convert success: {ov_fe_model_path}")
+
+def openvino_model_convert_pose_estimation_submodel(core, ov_pem_input_name, ov_pem_output_name, ov_pem_input, onnx_pem_model_path, ov_pem_model_path, ov_extension_lib_path):
+    ov_pem_model = ov.convert_model(onnx_pem_model_path, 
+                                    input=ov_pem_input_name,
+                                    example_input=ov_pem_input,
+                                    extension=ov_extension_lib_path,
+                                    )
+    compiled_model = core.compile_model(ov_pem_model, 'CPU')
+    ov.save_model(ov_pem_model, ov_pem_model_path)
+    print(f"[OpenVINO] pose estimation submodel convert success: {ov_pem_model_path}")
+
+def main():
     cfg = init()
 
     random.seed(cfg.rd_seed)
     torch.manual_seed(cfg.rd_seed)
 
-    # 设置设备
+    # device setting
     device = torch.device(cfg.device)
-    print(f"使用设备: {device}")
+    print(f"Using device: {device}")
 
-    # model
+    # model loading
     print("=> creating model ...")
     MODEL = importlib.import_module(cfg.model_name)
     model = MODEL.Net(cfg.model)
     model = model.to(device)
     model.eval()
     checkpoint = os.path.join(os.path.dirname((os.path.abspath(__file__))), 'checkpoints', 'sam-6d-pem-base.pth')
-    
-    # 加载checkpoint时指定map_location
+    # load checkpoint
     gorilla.solver.load_checkpoint(model=model, filename=checkpoint, map_location=device)
 
-    print("=> extracting templates ...")
-    tem_path = os.path.join(cfg.output_dir, 'templates')
-    all_tem, all_tem_pts, all_tem_choose = get_templates(tem_path, cfg.test_dataset, device)
-    with torch.no_grad():
-        all_tem_pts, all_tem_feat = model.feature_extraction.get_obj_feats(all_tem, all_tem_pts, all_tem_choose)
+    # prepare data for model convert
+    onnx_pem_input_name, onnx_pem_output_name, onnx_pem_input, \
+    onnx_fe_input_name, onnx_fe_output_name, onnx_fe_input, \
+    ov_pem_input_name, ov_pem_output_name, ov_pem_input, \
+    ov_fe_input_name, ov_fe_output_name, ov_fe_input = prepare_data(cfg, model, device)
 
-    print("=> loading input data ...")
-    input_data, img, whole_pts, model_points, detections = get_test_data(
-        cfg.rgb_path, cfg.depth_path, cfg.cam_path, cfg.cad_path, cfg.seg_path, 
-        cfg.det_score_thresh, cfg.test_dataset, device
-    )
-    print(f"[ONNX] input_data.keys: {input_data.keys()}")
-    ninstance = input_data['pts'].size(0)
-    
-    print("=> running model ...")
-    with torch.no_grad():
-        input_data['dense_po'] = all_tem_pts.repeat(ninstance,1,1)
-        input_data['dense_fo'] = all_tem_feat.repeat(ninstance,1,1)
-        model_input_tuple = (
-            input_data['pts'], input_data['rgb'], input_data['rgb_choose'], input_data['score'],
-            input_data['model'], input_data['K'], input_data['dense_po'], input_data['dense_fo']
-        )
-        pred_R, pred_t, pred_pose_score = model(*model_input_tuple)
+    model_save_path = "model_save"
+    os.makedirs(model_save_path, exist_ok=True)
+    onnx_pem_model_path = os.path.join(model_save_path, 'onnx_pem_model.onnx')
+    onnx_fe_model_path = os.path.join(model_save_path, 'onnx_fe_model.onnx')
+    ov_pem_model_path = os.path.join(model_save_path, 'ov_pem_model_cpu.xml')
+    ov_fe_model_path = os.path.join(model_save_path, 'ov_fe_model_cpu.xml')
+    ov_extension_lib_path = './model/ov_pointnet2_op/build/libopenvino_operation_extension.so'
 
-    # 直接用Net导出，不再用PEMWrapperModel
-    example_inputs = model_input_tuple
-    onnx_input_name = ["pts", "rgb", "rgb_choose", "score", "model", "K", "dense_po", "dense_fo"]
-    onnx_output_name = ["pred_R", "pred_t", "pred_pose_score"]
-    onnx_model_path = "pose_estimation_model_cpu.onnx"
+    core = Core()
+    core.add_extension(ov_extension_lib_path)
 
-    print("=> 尝试ONNX导出...")
-    try:
-        torch.onnx.export(
-            model,
-            example_inputs,
-            onnx_model_path,
-            opset_version=20,
-            operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
-            input_names=onnx_input_name,
-            output_names=onnx_output_name,
-            dynamic_axes={k: {0: "batch"} for k in onnx_input_name},
-            do_constant_folding=False,
-        )
-        print(f"[ONNX] PEM ONNX model export success: {onnx_model_path}")
-            
-    except Exception as e:
-        print(f"[ONNX] export failed : {e}")
+    # onnx model convert
+    onnx_model_convert_feature_extraction_submodel(model, onnx_fe_input_name, onnx_fe_output_name, onnx_fe_input, onnx_fe_model_path)
+    onnx_model_convert_pose_estimation_submodel(model, onnx_pem_input_name, onnx_pem_output_name, onnx_pem_input, onnx_pem_model_path)
 
-    # 保存PyTorch推理结果
-    # pose_scores = pred_pose_score.detach().cpu().numpy()
-    pose_scores = pred_pose_score.detach().cpu().numpy() * input_data['score'].detach().cpu().numpy()
-    pred_rot = pred_R.detach().cpu().numpy()
-    pred_trans = pred_t.detach().cpu().numpy() * 1000
+    # # openvino model convert
+    openvino_model_convert_feature_extraction_submodel(core, ov_fe_input_name, ov_fe_output_name, ov_fe_input, onnx_fe_model_path, ov_fe_model_path)
+    openvino_model_convert_pose_estimation_submodel(core, ov_pem_input_name, ov_pem_output_name, ov_pem_input, onnx_pem_model_path, ov_pem_model_path, ov_extension_lib_path)
 
-    print("=> saving results ...")
-    os.makedirs(f"{cfg.output_dir}/sam6d_results", exist_ok=True)
-    for idx, det in enumerate(detections):
-        det['score'] = float(pose_scores[idx])
-        det['R'] = list(pred_rot[idx].tolist())
-        det['t'] = list(pred_trans[idx].tolist())
-
-    with open(os.path.join(f"{cfg.output_dir}/sam6d_results", f'detection_pem_{cfg.device}.json'), "w") as f:
-        json.dump(detections, f)
-
-    print("=> visualizating ...")
-    save_path = os.path.join(f"{cfg.output_dir}/sam6d_results", f'vis_pem_{cfg.device}.png')
-    valid_masks = pose_scores == pose_scores.max()
-    K = input_data['K'].detach().cpu().numpy()[valid_masks]
-    vis_img = visualize(img, pred_rot[valid_masks], pred_trans[valid_masks], model_points*1000, K, save_path)
-    vis_img.save(save_path)
-    print(f"[Inference Done] Pose_Estimation_Model ({cfg.device} Version)") 
+if __name__ == "__main__":
+    main()
