@@ -21,7 +21,6 @@ void BallQuery::validate_and_infer_types() {
         throw std::runtime_error("BallQuery expects 2 inputs (new_xyz, xyz), got " + std::to_string(get_input_size()));
     }
     const auto& new_xyz = input(0);
-    // const auto& xyz = input(1);
     auto new_xyz_shape = new_xyz.get_partial_shape();
     ov::PartialShape output_shape = {new_xyz_shape[0], new_xyz_shape[1], m_nsample};
     set_output_type(0, ov::element::i32, output_shape);
@@ -53,9 +52,10 @@ bool BallQuery::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
     const float* new_xyz = inputs[0].data<const float>();
     const float* xyz = inputs[1].data<const float>();
 
-    int b = inputs[1].get_shape()[0]; // batch size
+    int b = inputs[0].get_shape()[0]; // batch size in new_xyz
     int n = inputs[1].get_shape()[1]; // number of points in xyz
     int npoint = inputs[0].get_shape()[1]; // number of points in new_xyz
+
 
     ov::PartialShape output_shape = {b, npoint, nsample};
     outputs[0].set_shape(output_shape.to_shape());
@@ -69,8 +69,9 @@ bool BallQuery::evaluate(ov::TensorVector& outputs, const ov::TensorVector& inpu
 
     for (int batch_index = 0; batch_index < b; ++batch_index) {
       // Each batch's starting position
-      const float *current_xyz = xyz + batch_index * n * 3;
       const float *current_new_xyz = new_xyz + batch_index * npoint * 3;
+      const float *current_xyz = xyz + batch_index * n * 3;
+      
       int *current_batch_idx = current_idx + batch_index * npoint * nsample;
 
       for (int j = 0; j < npoint; ++j) {
