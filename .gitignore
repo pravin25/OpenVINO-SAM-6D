@@ -8,3 +8,7 @@
 **/*.onnx
 #**/*.xml
 **/*.bin
+**/model_save/
+**/custom_op/
+**/model_save/
+**/test_model/
