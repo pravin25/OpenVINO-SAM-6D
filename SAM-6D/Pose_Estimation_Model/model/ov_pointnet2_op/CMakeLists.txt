@@ -13,6 +13,7 @@ execute_process(
 
 find_package(OpenVINO REQUIRED PATHS "${OpenVINO_DIR_PY}")
 find_package(Eigen3 REQUIRED)
+find_package(OpenMP REQUIRED)
 
 set(SRC furthest_point_sampling.cpp gather_operation.cpp three_nn.cpp three_interpolate.cpp cylinder_query.cpp ball_query.cpp grouping_operation.cpp custom_svd.cpp custom_det.cpp custom_searchsorted.cpp custom_debug_node.cpp ov_extension.cpp)
 # set(SRC furthest_point_sampling.cpp gather_operation.cpp three_nn.cpp three_interpolate.cpp cylinder_query.cpp ball_query.cpp grouping_operation.cpp ov_extension.cpp)
@@ -20,6 +21,9 @@ set(SRC furthest_point_sampling.cpp gather_operation.cpp three_nn.cpp three_inte
 add_library(${TARGET_NAME} MODULE ${SRC})
 
 target_link_libraries(${TARGET_NAME} PRIVATE openvino::runtime Eigen3::Eigen)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(${TARGET_NAME} PRIVATE openvino::runtime Eigen3::Eigen OpenMP::OpenMP_CXX)
+endif()
 
 # [cmake:extension]
 install(TARGETS ${TARGET_NAME}
