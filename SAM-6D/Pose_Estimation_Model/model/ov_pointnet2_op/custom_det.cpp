@@ -16,18 +16,18 @@ CustomDet::CustomDet(const ov::Output<ov::Node>& x) : Op({x}) {
 
 //! [op:validate]
 void CustomDet::validate_and_infer_types() {
-    // 输入shape: (m, n)
+    // inputshape: (batch_size, m, n)
     const auto& det_input = input(0);
     auto det_shape = det_input.get_partial_shape();
     auto elem_type = get_input_element_type(0);
-    // 输出为单个 float
+
     if (det_shape.rank().is_static() && det_shape.rank().get_length() == 3) {
         auto n1 = det_shape[1];
         auto n2 = det_shape[2];
         if (n1 != n2) {
             throw std::runtime_error("The last two dimensions must be equal (square matrices)");
         }
-        // 输出shape为batch size
+        // output shape : (batch_size)
         set_output_type(0, elem_type, ov::PartialShape{det_shape[0]});
     } else {
         throw std::runtime_error("Input must be a 3D tensor of shape (b, n, n)");

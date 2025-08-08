@@ -509,6 +509,7 @@ class CustomDet(torch.autograd.Function):
     @staticmethod
     def forward(ctx, H):
         det = torch.det(H)
+        # print("[CustomDet]", H.shape)
         ctx.save_for_backward(det)
         return det
 
