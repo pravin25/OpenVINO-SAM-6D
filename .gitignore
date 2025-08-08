@@ -6,5 +6,5 @@
 **/*.egg-info/
 **/*.egg
 **/*.onnx
-**/*.xml
+#**/*.xml
 **/*.bin
