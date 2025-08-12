@@ -32,27 +32,45 @@ DUMMY_BATCH_SIZE = 42000
 DUMMY_X = 3
 DUMMY_Y = 3
 
-class CustomSVD(torch.autograd.Function):
+class CustomSVDu(torch.autograd.Function):
     def __init__(self):
-        super(CustomSVD, self).__init__()
+        super(CustomSVDu, self).__init__()
     
     @staticmethod
     def forward(ctx, H):
         U, S, V = torch.svd(H)
-        ctx.save_for_backward(U, S, V)
-        return U, S, V
+        # ctx.save_for_backward(U, S, V)
+        return U
 
     @staticmethod
     def symbolic(g: torch.Graph, H: torch.Tensor) :
-        return g.op("CustomSVD", H, outputs=3)
+        return g.op("CustomSVDu", H, outputs=1)
+
+class CustomSVDv(torch.autograd.Function):
+    def __init__(self):
+        super(CustomSVDv, self).__init__()
+    
+    @staticmethod
+    def forward(ctx, H):
+        U, S, V = torch.svd(H)
+        # ctx.save_for_backward(U, S, V)
+        return V
+
+    @staticmethod
+    def symbolic(g: torch.Graph, H: torch.Tensor) :
+        return g.op("CustomSVDv", H, outputs=1)
 
 class MyModel(nn.Module):
     def __init__(self):
         super(MyModel, self).__init__()
-        self.custom_svd = CustomSVD.apply
+        self.custom_svd_u = CustomSVDu.apply
+        self.custom_svd_v = CustomSVDv.apply
 
     def forward(self, H):
-        return self.custom_svd(H) # (B, X, Y)
+        U = self.custom_svd_u(H)
+        V = self.custom_svd_v(H)
+        return U, V
+        # return U
 
 
 def get_input_data():
@@ -105,7 +123,7 @@ def ov_infer(ov_input, device="CPU"):
     ov_result = compiled_model.infer_new_request(ov_input)
     ov_infer_result =list(ov_result.values())
     ov_infer_time = time.time() - ov_start_time
-    print(f"[OpenVINO] infer time_cost: {(ov_infer_time*1000):.2f} ms")
+    print(f"[OV {device}] infer time_cost: {(ov_infer_time*1000):.2f} ms")
 
 def torch_ov_compare_cpu(ov_input, device="CPU"):
     print("--------------torch & ov compare result------------------")
@@ -127,14 +145,14 @@ def torch_ov_compare_cpu(ov_input, device="CPU"):
     ov_start_time = time.time()
     ov_result = compiled_model.infer_new_request(ov_input)
     ov_infer_result =list(ov_result.values())
-    print(f"[OV {device}] len: {len(ov_infer_result)} , shape : {ov_infer_result[0].shape, ov_infer_result[1].shape, ov_infer_result[2].shape}")
+    # print(f"[OV {device}] len: {len(ov_infer_result)} , shape : {ov_infer_result[0].shape, ov_infer_result[1].shape, ov_infer_result[2].shape}")
     ov_infer_time = time.time() - ov_start_time
     # print(f"[OV {device}] infer result: {ov_infer_result[0][:5]}")
     print(f"[OV {device}] infer time_cost: {(ov_infer_time*1000):.2f} ms")
     
     torch_start_time = time.time()
     torch_infer_result = torch_model(ov_input["svd_input"])
-    print(f"[Torch] len: {len(torch_infer_result)} , shape : {torch_infer_result[0].shape, torch_infer_result[1].shape, torch_infer_result[2].shape}")
+    # print(f"[Torch] len: {len(torch_infer_result)} , shape : {torch_infer_result[0].shape, torch_infer_result[1].shape, torch_infer_result[2].shape}")
 
     # print(f"[Torch CPU] infer result: \n{torch_infer_result[:5]}")
     torch_infer_time = time.time() - torch_start_time
@@ -164,8 +182,8 @@ def main():
     ov_model_convert(ov_input, ov_input_name)
 
     torch_ov_compare_cpu(ov_input, "CPU")
-    # torch_ov_compare_cpu(ov_input, "GPU")
-    ov_infer(ov_input, "GPU")
+    torch_ov_compare_cpu(ov_input, "GPU")
+    # ov_infer(ov_input, "GPU")
 
 
 if __name__ == "__main__":
