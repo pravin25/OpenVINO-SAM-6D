@@ -13,7 +13,6 @@ GatherOperation::GatherOperation(const ov::Output<ov::Node>& features, const ov:
 }
 //! [op:ctor]
 
-
 //! [op:validate]
 void GatherOperation::validate_and_infer_types() {
     // Operation doesn't change shapes end element type
@@ -34,14 +33,11 @@ void GatherOperation::validate_and_infer_types() {
     const auto& features_input = input(0);
     const auto& idx_input = input(1);
 
-    auto features_shape = features_input.get_partial_shape();  // [B, C, N]
-    auto idx_shape = idx_input.get_partial_shape();            // [B, npoint, nsample]
-
-    // Set output shape to 4D: [B, C, npoint, nsample]
-    ov::PartialShape output_shape = {features_shape[0], features_shape[1], idx_shape[1], idx_shape[2]};
+    auto features_shape = features_input.get_partial_shape();
+    auto idx_shape = idx_input.get_partial_shape();
+    ov::PartialShape output_shape = {features_shape[0], features_shape[1], idx_shape[1]};
     set_output_type(0, features_input.get_element_type(), output_shape);
 }
-
 //! [op:validate]
 
 //! [op:copy]
@@ -67,39 +63,44 @@ bool GatherOperation::evaluate(ov::TensorVector& outputs, const ov::TensorVector
     int c = inputs[0].get_shape()[1]; // channels
     int n = inputs[0].get_shape()[2]; // number of points
     int npoints = inputs[1].get_shape()[1]; // number of points to gather
-    int nsample = inputs[1].get_shape()[2];
 
-    printf("\n------------------------------------------------------------->nmsamplep:%d", nsample);
-
-    ov::PartialShape output_shape = {b, c, npoints, nsample};
+    ov::PartialShape output_shape = {b, c, npoints};
     outputs[0].set_shape(output_shape.to_shape());
     auto* out_tensor = outputs[0].data<float>();
-    
-    // Initialize output to 0
-    int output_total = b * c * npoints * nsample;
-    for (int i = 0; i < output_total; ++i) {
-	    out_tensor[i] = 0.0f;
-    }
-    for (int batch = 0; batch < b; ++batch) {
-         for (int channel = 0; channel < c; ++channel) {
-	     for (int point = 0; point < npoints; ++point) {
-	          for (int sample = 0; sample < nsample; ++sample) {
-	                int index = idx[batch * (npoints * nsample) + point * nsample + sample];
-		 	if (index >= 0 && index < n) {
-			    float val = features[batch * (c * n) + channel * n + index];
-			    if (std::isnan(val) || std::isinf(val)) {
-				val = 0.0f;
-			    }
-			    out_tensor[batch * (c * npoints * nsample) + channel * (npoints * nsample) + point * nsample + sample] = val;
-			} else {
-			    out_tensor[batch * (c * npoints * nsample) + channel * (npoints * nsample) + point * nsample + sample] = 0.0f;
-		        }
-	          }
-	     }
-         }
-    } 
 
-    /*
+    // Initialize output to 0, to avoid uninitialized memory
+    int output_total = b * c * npoints;
+    for (int i = 0; i < output_total; ++i) {
+        out_tensor[i] = 0.0f;
+    }
+    
+    for (int i = 0; i < b; ++i) {
+        // For each channel c
+        for (int l = 0; l < c; ++l) {
+            // For each sample point m
+            for (int j = 0; j < npoints; ++j) {
+                // Get the index of the corresponding original point
+                int a = idx[i * npoints + j];
+                if(a >= 0 && a < n) { // Ensure the index is valid
+                    // Correct memory layout calculation
+                    // Input: features[batch][channel][point] = features[i * c * n + l * n + a]
+                    // Output: out_tensor[batch][channel][point] = out_tensor[i * c * npoints + l * npoints + j]
+                    float input_val = features[i * c * n + l * n + a];
+                    
+                    // Check if the input value is NaN or Inf, if so, set to 0
+                    if (std::isnan(input_val) || std::isinf(input_val)) {
+                        out_tensor[i * c * npoints + l * npoints + j] = 0.0f;
+                    } else {
+                        out_tensor[i * c * npoints + l * npoints + j] = input_val;
+                    }
+                } else {
+                    // If the index is invalid, set to 0.0
+                    out_tensor[i * c * npoints + l * npoints + j] = 0.0f;
+                }
+            }
+        }
+    }
+    
     // Debug: record input data
     const bool debug = false; // true / false
     if (debug) {
@@ -151,7 +152,7 @@ bool GatherOperation::evaluate(ov::TensorVector& outputs, const ov::TensorVector
         } else {
             std::cerr << "[GatherOperation Debug] Failed to open output/ov_gather_operation.txt for writing!" << std::endl;
         }
-    }*/
+    }
     // out.set_shape(in.get_shape());
     // memcpy(out.data(), in.data(), in.get_byte_size());
     return true;
