@@ -32,32 +32,6 @@ DUMMY_N = 2048       # number of points from actual input
 DUMMY_NPOINT = 2048  # number of query points from actual input
 DUMMY_NSAMPLE = 32   # number of samples per query point from actual input
 
-# make grouping_opration_cl.xml file
-def update_kernel_xml(path, B, C, N, NPOINT, NSAMPLE):
-    tree = ET.parse(path)
-    root = tree.getroot()
-
-    defines = {
-        "B": str(B),
-        "C": str(C),
-        "N": str(N),
-        "NPOINT": str(NPOINT),
-        "NSAMPLE": str(NSAMPLE),
-    }
-
-    for define in root.findall(".//Define"):
-        name = define.attrib["name"]
-        if name in defines:
-            define.attrib["default"] = defines[name]
-
-    global_work_size = str(B * C * NPOINT * NSAMPLE)
-    worksize_elem = root.find(".//WorkSizes")
-    if worksize_elem is not None:
-        worksize_elem.attrib["global"] = f"{global_work_size},1,1"
-
-    tree.write(path)
-
-
 # OpenVINO Core
 core = ov.Core()
 core.add_extension(ov_extension_lib_path)
@@ -94,6 +68,7 @@ class GroupingOpWrapper(torch.autograd.Function):
         B, nfeatures, nsample = idx.size()
         _, C, N = features.size()
         ctx.for_backwards = (idx, N)
+        
         return _ext.group_points(features, idx)
 
 
@@ -217,14 +192,13 @@ def compare_infer(torch_out, ov_out, device):
 
 ### ----------------- Main ----------------- ###
 def main():
-    torch.manual_seed(42)
-    np.random.seed(42)
+     
+    np.random.seed(324)
+    torch.manual_seed(32)
 
     model = MyModel()
     model.eval()
     torch.save(model.state_dict(), torch_model_path)
-
-    update_kernel_xml(ov_kernel_path, DUMMY_B, DUMMY_C, DUMMY_N, DUMMY_NPOINT, DUMMY_NSAMPLE)
 
     onnx_input, onnx_input_name, ov_input, ov_input_name = get_input_data()
 
@@ -233,6 +207,7 @@ def main():
     convert_to_openvino(ov_input, ov_input_name)
 
 ##--------- compare CPU pytorch vs OV GPU -------- ###
+    print(f"Group Operation:") 
     torch_out = pytorch_infer(ov_input)
     ov_out = ov_infer(ov_input, "GPU")
     compare_infer(torch_out, ov_out, "GPU")

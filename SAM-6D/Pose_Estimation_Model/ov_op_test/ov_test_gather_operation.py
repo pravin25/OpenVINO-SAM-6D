@@ -23,40 +23,12 @@ DUMMY_B = 2
 DUMMY_C = 64
 DUMMY_N = 128
 DUMMY_NPOINT = 32
-DUMMY_NSAMPLE = 16 
 '''
 
-DUMMY_B = 16       # Increase batch size
-DUMMY_C = 128     # More channels
-DUMMY_N = 256     # More points
-DUMMY_NPOINT = 64 # More query points
-#DUMMY_NSAMPLE = 32 # More samples per query point
-
-
-# make gather_opration_cl.xml file
-def update_kernel_xml(path, B, C, N, NPOINT):
-    tree = ET.parse(path)
-    root = tree.getroot()
-
-    defines = {
-        "B": str(B),
-        "C": str(C),
-        "N": str(N),
-        "NPOINT": str(NPOINT),
-    }
-
-    for define in root.findall(".//Define"):
-        name = define.attrib["name"]
-        if name in defines:
-            define.attrib["default"] = defines[name]
-
-    global_work_size = str(B * C * NPOINT)
-    worksize_elem = root.find(".//WorkSizes")
-    if worksize_elem is not None:
-        worksize_elem.attrib["global"] = f"{global_work_size},1,1"
-
-    tree.write(path)
-
+DUMMY_B = 7        # Batch size
+DUMMY_C = 256      # Number of feature channels
+DUMMY_N = 2049     # Total input points in 'features'
+DUMMY_NPOINT = 196 # Number of gathered points (from idx)
 
 
 # OpenVINO Core
@@ -76,23 +48,23 @@ class GatherOpWrapper(torch.autograd.Function):
     def forward(ctx, features, idx):
         # type: (Any, torch.Tensor, torch.Tensor) -> torch.Tensor
         r"""
-
         Parameters
         ----------
         features : torch.Tensor
-            (B, C, N) tensor of features to group
+            (B, C, N) tensor
+
         idx : torch.Tensor
-            (B, npoint, nsample) tensor containing the indicies of features to group with
+            (B, npoint) tensor of the features to gather
 
         Returns
         -------
         torch.Tensor
-            (B, C, npoint, nsample) tensor
+            (B, C, npoint) tensor
         """
+
         if idx.dtype != torch.int32:
             idx = idx.to(torch.int32)
 
-        # B, nfeatures, nsample = idx.size()
         _, C, N = features.size()
         ctx.for_backwards = (idx, C, N)
 
@@ -118,10 +90,15 @@ def get_input_data():
     onnx_input = (features, idx)
     onnx_input_name = ["features", "idx"]
 
-    ov_input = {"features": features.numpy(), "idx": idx_int32.numpy()}
+    ov_input = {
+        "features": features.numpy(), 
+        "idx": idx_int32.numpy()
+    }
     ov_input_name = {"features": [DUMMY_B, DUMMY_C, DUMMY_N],
                      "idx": [DUMMY_B, DUMMY_NPOINT]}
 
+    #print("features sample:", features[0, :, :5])  # prints first 5 points of the first sample
+    #print("idx sample:", idx[0, :5, :])            # prints first 5 query groups
     return onnx_input, onnx_input_name, ov_input, ov_input_name
 
 
@@ -162,8 +139,13 @@ def pytorch_infer(ov_input, device="CPU"):
     model.eval()
     torch_start = time.time()
     #torch_out = model(torch.tensor(ov_input["features"]),torch.tensor(ov_input["idx"], dtype=torch.int32))    
+    
     features_tensor = ov_input["features"].clone().detach()
     idx_tensor = ov_input["idx"].clone().detach().to(torch.int32)
+    
+    #features_tensor = torch.tensor(ov_input["features"])
+    #idx_tensor = torch.tensor(ov_input["idx"], dtype=torch.int32)
+
     torch_out = model(features_tensor, idx_tensor) 
     torch_time = time.time() - torch_start
     print(f"Performance Capture:")
@@ -214,14 +196,12 @@ def compare_infer(torch_out, ov_out, device):
 
 ### ----------------- Main ----------------- ###
 def main():
-    torch.manual_seed(42)
-    np.random.seed(42)
+    np.random.seed(324)
+    torch.manual_seed(32)
 
     model = MyModel()
     model.eval()
     torch.save(model.state_dict(), torch_model_path)
-
-    update_kernel_xml(ov_kernel_path, DUMMY_B, DUMMY_C, DUMMY_N, DUMMY_NPOINT)
 
     onnx_input, onnx_input_name, ov_input, ov_input_name = get_input_data()
 
@@ -230,14 +210,15 @@ def main():
     convert_to_openvino(ov_input, ov_input_name)
 
 ##--------- compare CPU pytorch vs OV GPU -------- ###
+    print(f"Gather Operation:")
     torch_out = pytorch_infer(ov_input)
     ov_out = ov_infer(ov_input, "GPU")
     compare_infer(torch_out, ov_out, "GPU")
     
 ##--------- compare CPU pytorch vs OV CPU -------- ###
-    torch_out = pytorch_infer(ov_input)
-    ov_out = ov_infer(ov_input) #CPU
-    compare_infer(torch_out, ov_out, "CPU")
+    #torch_out = pytorch_infer(ov_input)
+    #ov_out = ov_infer(ov_input) #CPU
+    #compare_infer(torch_out, ov_out, "CPU")
 
 if __name__ == "__main__":
     main()

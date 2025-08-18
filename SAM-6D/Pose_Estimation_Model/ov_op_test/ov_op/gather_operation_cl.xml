@@ -1,19 +1,25 @@
 <CustomLayer name="GatherOperation" type="SimpleGPU" version="1">
     <Kernel entry="gather_kernel">
-        <Source filename="gather_operation.cl"/>
-        <Define name="B" type="int32" default="2"/>
-        <Define name="C" type="int32" default="64"/>
-        <Define name="N" type="int32" default="128"/>
-        <Define name="NPOINT" type="int32" default="32"/>
-        <Define name="NSAMPLE" type="int32" default="16"/>
+        <Source filename="gather_operation.cl" />
     </Kernel>
 
     <Buffers>
-        <Tensor arg-index="0" type="input" port-index="0"/>
-        <Tensor arg-index="1" type="input" port-index="1"/>
-        <Tensor arg-index="2" type="output" port-index="0" format="bfyx"/>
+    	<Tensor arg-index="0" type="input" port-index="0" /> <!-- features: (B, C, N) -->
+    	<Tensor arg-index="1" type="input" port-index="1" /> <!-- idx: (B, NPOINT) -->
+    	<Tensor arg-index="2" type="output" port-index="0" format="bfyx" /> <!-- output: (B, C, NPOINT) -->
     </Buffers>
+   
+    <CompilerOptions options="-cl-mad-enable"/>
 
-    <WorkSizes global="65536,1,1"/> <!-- 2 * 64 * 32 * 16 -->
+    <!-- <WorkSizes global="B,F,1" local="1,1,1" /> -->
+    <!-- notes:
+        Global work sizes should be total number of output elements:
+	B * C * NPOINT
+	Local size can be tuned for your hardware; keeping it 64 is typical
+        b = batch size (B)
+        f = feature channels (C)
+        y = height or dimension (NPOINT)
+    -->
+    <!-- <WorkSizes global="b*f*y,1,1" local="128,1,1" /> -->
+    <WorkSizes global="b*f*y,1,1" local="64,1,1" />
 </CustomLayer>
-
