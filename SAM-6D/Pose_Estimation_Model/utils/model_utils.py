@@ -7,6 +7,7 @@ import numpy as np
 from pointnet2_utils import (
     gather_operation,
     furthest_point_sample,
+    CustomDebugNode,
 )
 
 DEBUG_FLAG = False
@@ -50,14 +51,15 @@ def interpolate_pos_embed(model, checkpoint_model):
             checkpoint_model['pos_embed'] = new_pos_embed
 
 
-
 def sample_pts_feats(pts, feats, npoint=2048, return_index=False):
     '''
         pts: B*N*3
         feats: B*N*C
     '''
-    # sample_idx = furthest_point_sample(pts, npoint)
-    sample_idx = furthest_point_sample(pts, torch.tensor(npoint))
+
+    sample_idx = furthest_point_sample(pts, torch.ones(npoint))
+    # sample_idx = furthest_point_sample(pts, torch.tensor(npoint))
+
     if DEBUG_FLAG:
         # print(f"[Torch] FurthestPointSampling output: {sample_idx}")
         flat_sample_idx = sample_idx.cpu().detach().numpy().reshape(-1)
@@ -410,7 +412,12 @@ def weighted_procrustes(
     # U, _, V = torch.svd(H) #Exporting the operator 'aten::svd' to ONNX opset version 20 is not supported
     # Replace torch.svd with ONNX compatible implementation
     print(f"[weighted_procrustes] torch.svd input shape: {H.shape}")
-    U, _, V = CustomSVD.apply(H)
+    # U, _, V = CustomSVD.apply(H)
+    custom_svd_u = CustomSVDu.apply
+    custom_svd_v = CustomSVDv.apply
+    U = custom_svd_u(H)
+    V = custom_svd_v(H)
+
     if DEBUG_FLAG:
         flat_H = H.cpu().detach().numpy().reshape(-1)
         flat_U = U.cpu().detach().numpy().reshape(-1)
@@ -422,9 +429,6 @@ def weighted_procrustes(
             f.write(' '.join(f'{x:.2f}' for x in flat_U) + '\n')
             f.write('--- torch custom_svd (V) ---\n')
             f.write(' '.join(f'{x:.2f}' for x in flat_V) + '\n')
-
-    # U, _, V = svd_eigh_replace(H)
-    # U, _, V = svd_onnx_compatible(H)
     
     Ut, V = U.transpose(1, 2), V
     eye = torch.eye(3).unsqueeze(0).repeat(batch_size, 1, 1).to(src_points.device)
@@ -502,6 +506,35 @@ class CustomSVD(torch.autograd.Function):
     def symbolic(g: torch.Graph, H: torch.Tensor) :
         return g.op("CustomSVD", H, outputs=3)
 
+class CustomSVDu(torch.autograd.Function):
+    def __init__(self):
+        super(CustomSVDu, self).__init__()
+    
+    @staticmethod
+    def forward(ctx, H):
+        U, S, V = torch.svd(H)
+        # ctx.save_for_backward(U, S, V)
+        return U
+
+    @staticmethod
+    def symbolic(g: torch.Graph, H: torch.Tensor) :
+        return g.op("CustomSVDu", H, outputs=1)
+
+class CustomSVDv(torch.autograd.Function):
+    def __init__(self):
+        super(CustomSVDv, self).__init__()
+    
+    @staticmethod
+    def forward(ctx, H):
+        U, S, V = torch.svd(H)
+        # ctx.save_for_backward(U, S, V)
+        return V
+
+    @staticmethod
+    def symbolic(g: torch.Graph, H: torch.Tensor) :
+        return g.op("CustomSVDv", H, outputs=1)
+
+
 class CustomDet(torch.autograd.Function):
     def __init__(self):
         super(CustomDet, self).__init__()
@@ -516,27 +549,3 @@ class CustomDet(torch.autograd.Function):
     @staticmethod
     def symbolic(g: torch.Graph, H: torch.Tensor) :
         return g.op("CustomDet", H, outputs=1)
-
-
-class CustomDebugNode(torch.autograd.Function):
-    def __init__(self):
-        super(CustomDebugNode, self).__init__()
-
-    @staticmethod
-    def forward(ctx, input):
-        flat_input = input.cpu().detach().numpy().reshape(-1)
-        print(f"[Shape]: {input.shape} , type: {type(input)}")
-        with open('output/torch_debug_node.txt', 'a') as f:
-            f.write('--- torch custom_debug_node (input) ---\n')
-            f.write(f"[Shape]: {input.shape} , dtype: {type(input)}\n")
-            # Only keep the first 100 data
-            max_elements = min(100, len(flat_input))
-            f.write(' '.join(f'{x:.2f}' for x in flat_input[:max_elements]) + '\n')
-            if len(flat_input) > 100:
-                f.write(f'... (truncated, total {len(flat_input)} elements)\n')
-            f.write('\n')
-        return input
-    
-    @staticmethod
-    def symbolic(g, input):
-        return g.op("CustomDebugNode", input, outputs=1)
